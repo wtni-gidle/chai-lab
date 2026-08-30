@@ -110,6 +110,77 @@ class PreparedA3MTest(unittest.TestCase):
 
 
 class PreparedMSAWorkflowTest(unittest.TestCase):
+    def test_inline_content_is_accepted_and_externalized_with_af3_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "request.json"
+            input_path.write_text(
+                json.dumps(
+                    _manifest(
+                        [
+                            {
+                                "id": ["A", "B"],
+                                "sequence": "AAAA",
+                                "pairedMsa": PAIRED,
+                                "unpairedMsa": UNPAIRED,
+                            }
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            inline = load_prepared_input(input_path).validate_resources(input_path)
+            inline_private = build_private_msa_directory(
+                inline, root / "inline-private"
+            )
+            self.assertTrue((inline_private / expected_basename("AAAA")).is_file())
+
+            output_manifest = root / "result" / "seq" / "seq_data.json"
+            prepare_msa_bundle(input_path, output_manifest, use_msa_server=False)
+            protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
+            self.assertEqual(protein["pairedMsaPath"], "msas/seq__A_pairedmsa.a3m.zst")
+            self.assertEqual(
+                protein["unpairedMsaPath"], "msas/seq__A_unpairedmsa.a3m.zst"
+            )
+            self.assertNotIn("pairedMsa", protein)
+            self.assertNotIn("unpairedMsa", protein)
+
+    def test_explicit_empty_inline_msas_do_not_trigger_search(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "request.json"
+            input_path.write_text(
+                json.dumps(
+                    _manifest(
+                        [
+                            {
+                                "id": ["A"],
+                                "sequence": "AAAA",
+                                "pairedMsa": "",
+                                "unpairedMsa": "",
+                            }
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            def unexpected_search(*args, **kwargs):
+                self.fail("Explicit empty MSA content must not trigger server search")
+
+            output_manifest = root / "result" / "seq" / "seq_data.json"
+            prepare_msa_bundle(
+                input_path,
+                output_manifest,
+                use_msa_server=True,
+                searcher=unexpected_search,
+            )
+            protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
+            self.assertEqual(protein["pairedMsa"], "")
+            self.assertEqual(protein["unpairedMsa"], "")
+            self.assertFalse((output_manifest.parent / "msas").exists())
+
     def test_split_reconstruction_matches_native_colabfold_output(self):
         from chai_lab.data.dataset.msas.colabfold import generate_colabfold_msas
 
@@ -151,14 +222,14 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                             {
                                 "id": ["A"],
                                 "sequence": "AAAA",
-                                "paired_msa": "A_pair.a3m",
-                                "unpaired_msa": "A_single.a3m",
+                                "pairedMsaPath": "A_pair.a3m",
+                                "unpairedMsaPath": "A_single.a3m",
                             },
                             {
                                 "id": ["C"],
                                 "sequence": "CCCC",
-                                "paired_msa": "C_pair.a3m",
-                                "unpaired_msa": "C_single.a3m",
+                                "pairedMsaPath": "C_pair.a3m",
+                                "unpairedMsaPath": "C_single.a3m",
                             },
                         ]
                     )
@@ -195,9 +266,9 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                             {
                                 "id": ["A", "B"],
                                 "sequence": "AAAA",
-                                "paired_msa": paired_path.name,
-                                "unpaired_msa": unpaired_path.name,
-                                "unpaired_msa_fallback_source": "auto",
+                                "pairedMsaPath": paired_path.name,
+                                "unpairedMsaPath": unpaired_path.name,
+                                "unpairedMsaFallbackSource": "auto",
                             }
                         ]
                     )
@@ -213,10 +284,12 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             )
             bundled_json = json.loads(output_manifest.read_text(encoding="utf-8"))
             protein = bundled_json["sequences"][0]["protein"]
-            self.assertEqual(protein["paired_msa"], "msas/seq_A_paired.a3m.zst")
-            self.assertEqual(protein["unpaired_msa"], "msas/seq_A_unpaired.a3m.zst")
+            self.assertEqual(protein["pairedMsaPath"], "msas/seq__A_pairedmsa.a3m.zst")
+            self.assertEqual(
+                protein["unpairedMsaPath"], "msas/seq__A_unpairedmsa.a3m.zst"
+            )
             self.assertNotIn("sequence_hash", protein)
-            for key in ("paired_msa", "unpaired_msa"):
+            for key in ("pairedMsaPath", "unpairedMsaPath"):
                 artifact = output_manifest.parent / protein[key]
                 self.assertEqual(artifact.read_bytes()[:4], b"\x28\xb5\x2f\xfd")
 
@@ -243,14 +316,14 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                             {
                                 "id": ["A", "B"],
                                 "sequence": "AAAA",
-                                "paired_msa": None,
-                                "unpaired_msa": None,
+                                "pairedMsa": None,
+                                "unpairedMsa": None,
                             },
                             {
                                 "id": ["C"],
                                 "sequence": "CCCC",
-                                "paired_msa": None,
-                                "unpaired_msa": None,
+                                "pairedMsa": None,
+                                "unpairedMsa": None,
                             },
                         ]
                     )
@@ -288,11 +361,15 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             self.assertEqual(observed_queries, ["AAAA", "AAAA", "CCCC"])
             self.assertIn(
                 ">first_A",
-                read_text_auto(output_manifest.parent / "msas/seq_A_paired.a3m.zst"),
+                read_text_auto(
+                    output_manifest.parent / "msas/seq__A_pairedmsa.a3m.zst"
+                ),
             )
             self.assertNotIn(
                 ">second_B",
-                read_text_auto(output_manifest.parent / "msas/seq_A_paired.a3m.zst"),
+                read_text_auto(
+                    output_manifest.parent / "msas/seq__A_pairedmsa.a3m.zst"
+                ),
             )
 
     def test_monomer_server_result_does_not_write_empty_paired_file(self):
@@ -306,8 +383,8 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                             {
                                 "id": ["A"],
                                 "sequence": "AAAA",
-                                "paired_msa": None,
-                                "unpaired_msa": None,
+                                "pairedMsa": None,
+                                "unpairedMsa": None,
                             }
                         ]
                     )
@@ -326,8 +403,10 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                 searcher=fake_searcher,
             )
             protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
-            self.assertIsNone(protein["paired_msa"])
-            self.assertEqual(protein["unpaired_msa"], "msas/seq_A_unpaired.a3m.zst")
+            self.assertEqual(protein["pairedMsa"], "")
+            self.assertEqual(
+                protein["unpairedMsaPath"], "msas/seq__A_unpairedmsa.a3m.zst"
+            )
 
     def test_normalized_query_collision_cannot_silently_overwrite_parquet(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -344,14 +423,14 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                             {
                                 "id": ["A"],
                                 "sequence": "AS(SEP)TG",
-                                "paired_msa": None,
-                                "unpaired_msa": first_msa.name,
+                                "pairedMsa": None,
+                                "unpairedMsaPath": first_msa.name,
                             },
                             {
                                 "id": ["B"],
                                 "sequence": "ASSTG",
-                                "paired_msa": None,
-                                "unpaired_msa": second_msa.name,
+                                "pairedMsa": None,
+                                "unpairedMsaPath": second_msa.name,
                             },
                         ]
                     )

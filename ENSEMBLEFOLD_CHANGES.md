@@ -18,15 +18,16 @@ native CLI and prediction writer are still unchanged.
 `chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
 `_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
 writing, and the `<output>/<name>/<name>_data.json` path rule. Molecular entities and
-sequences live directly in JSON; there is no `fasta_path`. Protein MSA paths are stored
-with their protein entity. Sequence hashes are derived internally rather than persisted.
+sequences live directly in JSON; there is no `fasta_path`. Protein MSA content or paths
+are stored with their protein entity. Sequence hashes are derived internally rather than
+persisted.
 The top-level `name` is the formal target identity, so renaming the JSON file does not
 rename the target. Unknown fields and unsafe target/entity names are rejected instead
 of being silently corrected.
 
 Prepared entities expand directly to the lightweight native `Input` objects also used
 by the FASTA reader. A protein entry with `id: [A, B]` therefore becomes two native
-chain inputs while keeping one sequence and one pair of MSA paths. The public native
+chain inputs while keeping one sequence and one pair of MSA inputs. The public native
 FASTA path remains available and behavior-compatible.
 
 `chai_lab.workflow.build_workflow_plan` validates data/inference stage combinations and
@@ -36,8 +37,12 @@ existing `chai-lab fold` command still calls the native `run_inference` function
 
 Stage 2 provides `prepare_msa_bundle()` and `build_private_msa_directory()`. The first
 normalizes supplied or ColabFold-generated paired/unpaired A3Ms into canonical
-`<target>_<first-entity-id>_{paired,unpaired}.a3m.zst` artifacts and writes the updated
-`_data.json`. The second reads the current A3Ms and reconstructs Chai's hash-named
+`<target>__<first-entity-id>_{pairedmsa,unpairedmsa}.a3m.zst` artifacts and writes the
+updated `_data.json`. Protein JSON follows AF3 Pro's alternatives:
+`pairedMsa`/`pairedMsaPath` and `unpairedMsa`/`unpairedMsaPath`; each MSA may be supplied
+as inline A3M text or a path, but never both. Explicit empty inline content is retained
+and does not trigger a server search. The second API reads the current A3Ms and
+reconstructs Chai's hash-named
 `.aligned.pqt` files in a caller-owned private temporary directory. No `processed`
 directory is persisted. Plain, gzip, xz, and zstd text are detected from magic bytes,
 not filename suffixes. Query sequence, aligned width, source database fallback,
@@ -77,11 +82,12 @@ the early stages.
 
 ## Stage 2 validation
 
-- 21 tests plus 2 parameterized subtests passed in an isolated Python 3.12 environment.
+- 24 tests plus 2 parameterized subtests passed in an isolated Python 3.12 environment.
 - Coverage includes self-contained JSON, plain/gzip/xz/zstd magic-byte reads, canonical
   zstd writes, A3M query/width validation, native paired/unpaired merge semantics,
   first-ID naming for homomers, chain expansion during server search, monomer empty
-  paired behavior, private Parquet construction, normalized-query collision detection,
-  and native/split Parquet equality.
+  paired behavior, AF3-style inline/path alternatives, explicit-empty behavior, private
+  Parquet construction, normalized-query collision detection, and native/split Parquet
+  equality.
 - `python3 -m compileall -q chai_lab tests`, focused Ruff checks, Ruff formatting, and
   `git diff --check` passed.

@@ -27,9 +27,9 @@ def _manifest_dict() -> dict:
                 "protein": {
                     "id": ["A", "B"],
                     "sequence": "AAAA",
-                    "paired_msa": "msas/seq_A_paired.a3m.zst",
-                    "unpaired_msa": "msas/seq_A_unpaired.a3m.zst",
-                    "unpaired_msa_fallback_source": "auto",
+                    "pairedMsaPath": "msas/seq__A_pairedmsa.a3m.zst",
+                    "unpairedMsaPath": "msas/seq__A_unpairedmsa.a3m.zst",
+                    "unpairedMsaFallbackSource": "auto",
                 }
             },
             {"rna": {"id": ["R"], "sequence": "AUGC"}},
@@ -51,8 +51,8 @@ class PreparedInputTest(unittest.TestCase):
             (job_dir / "msas").mkdir(parents=True)
             (job_dir / "constraints").mkdir()
             for path in (
-                job_dir / "msas" / "seq_A_paired.a3m.zst",
-                job_dir / "msas" / "seq_A_unpaired.a3m.zst",
+                job_dir / "msas" / "seq__A_pairedmsa.a3m.zst",
+                job_dir / "msas" / "seq__A_unpairedmsa.a3m.zst",
                 job_dir / "constraints" / "seq.restraints.csv",
             ):
                 path.write_text("test\n", encoding="utf-8")
@@ -67,22 +67,39 @@ class PreparedInputTest(unittest.TestCase):
             self.assertEqual(loaded, prepared)
             self.assertEqual(resolved.name, "seq")
             self.assertEqual(
-                resolved.sequences[0].unpaired_msa,
-                (job_dir / "msas" / "seq_A_unpaired.a3m.zst").resolve(),
+                resolved.sequences[0].unpaired_msa_path,
+                (job_dir / "msas" / "seq__A_unpairedmsa.a3m.zst").resolve(),
             )
 
     def test_initial_json_can_have_no_external_resources(self):
         manifest = _manifest_dict()
         protein = manifest["sequences"][0]["protein"]
-        protein["paired_msa"] = None
-        protein["unpaired_msa"] = None
-        del protein["unpaired_msa_fallback_source"]
+        del protein["pairedMsaPath"]
+        del protein["unpairedMsaPath"]
+        del protein["unpairedMsaFallbackSource"]
         manifest["constraint_path"] = None
 
         prepared = PreparedInput.from_dict(manifest)
         self.assertIsNone(prepared.sequences[0].paired_msa)
+        self.assertIsNone(prepared.sequences[0].paired_msa_path)
         self.assertIsNone(prepared.sequences[0].unpaired_msa)
+        self.assertIsNone(prepared.sequences[0].unpaired_msa_path)
         self.assertEqual(prepared.sequences[0].unpaired_msa_fallback_source, "auto")
+
+    def test_inline_msa_and_path_are_alternatives(self):
+        manifest = _manifest_dict()
+        protein = manifest["sequences"][0]["protein"]
+        del protein["pairedMsaPath"]
+        del protein["unpairedMsaPath"]
+        protein["pairedMsa"] = ""
+        protein["unpairedMsa"] = ">query\nAAAA\n"
+        prepared = PreparedInput.from_dict(manifest)
+        self.assertEqual(prepared.sequences[0].paired_msa, "")
+        self.assertEqual(prepared.sequences[0].unpaired_msa, ">query\nAAAA\n")
+
+        protein["unpairedMsaPath"] = "msa.a3m"
+        with self.assertRaisesRegex(PreparedInputError, "only one of"):
+            PreparedInput.from_dict(manifest)
 
     def test_json_entities_expand_to_native_chai_inputs(self):
         prepared = PreparedInput.from_dict(_manifest_dict())
@@ -134,8 +151,6 @@ class PreparedInputTest(unittest.TestCase):
                 "protein": {
                     "id": ["C"],
                     "sequence": "aaaa",
-                    "paired_msa": None,
-                    "unpaired_msa": None,
                 }
             }
         )
@@ -145,7 +160,7 @@ class PreparedInputTest(unittest.TestCase):
     def test_schema_rejects_unknown_fallback_source(self):
         manifest = _manifest_dict()
         protein = manifest["sequences"][0]["protein"]
-        protein["unpaired_msa_fallback_source"] = "mystery"
+        protein["unpairedMsaFallbackSource"] = "mystery"
         with self.assertRaisesRegex(PreparedInputError, "supported Chai MSA source"):
             PreparedInput.from_dict(manifest)
 
@@ -155,7 +170,7 @@ class PreparedInputTest(unittest.TestCase):
             manifest_path.write_text(json.dumps(_manifest_dict()), encoding="utf-8")
             prepared = load_prepared_input(manifest_path)
             with self.assertRaisesRegex(
-                PreparedInputError, "paired_msa does not exist"
+                PreparedInputError, "pairedMsaPath does not exist"
             ):
                 prepared.validate_resources(manifest_path)
 
@@ -171,8 +186,8 @@ class WorkflowPlanTest(unittest.TestCase):
             root = Path(temporary_directory)
             manifest = _manifest_dict()
             protein = manifest["sequences"][0]["protein"]
-            protein["paired_msa"] = None
-            protein["unpaired_msa"] = None
+            protein.pop("pairedMsaPath")
+            protein.pop("unpairedMsaPath")
             manifest["constraint_path"] = None
             input_path = root / "arbitrary_name.json"
             input_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -195,8 +210,8 @@ class WorkflowPlanTest(unittest.TestCase):
             root = Path(temporary_directory)
             manifest = _manifest_dict()
             protein = manifest["sequences"][0]["protein"]
-            protein["paired_msa"] = None
-            protein["unpaired_msa"] = None
+            protein.pop("pairedMsaPath")
+            protein.pop("unpairedMsaPath")
             manifest["constraint_path"] = None
             manifest_path = root / "anything.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

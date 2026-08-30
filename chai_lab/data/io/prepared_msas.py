@@ -47,6 +47,16 @@ def _canonical_text(text: str) -> str:
     return text if not text or text.endswith("\n") else f"{text}\n"
 
 
+def _msa_is_supplied(content: str | None, path: Path | None) -> bool:
+    return content is not None or path is not None
+
+
+def _read_msa(content: str | None, path: Path | None) -> str | None:
+    if path is not None:
+        return read_text_auto(path)
+    return content
+
+
 def _rebase_templates(
     templates: PreparedTemplates | None,
     source_manifest: Path,
@@ -72,8 +82,9 @@ def prepare_msa_bundle(
 ) -> PreparedInput:
     """Write canonical A3M.zst files and the resulting ``*_data.json``.
 
-    Declared MSA paths win. If server search is enabled, it fills only missing
-    paired/unpaired inputs while still searching the complete protein assembly.
+    Declared inline MSA content or MSA paths win. If server search is enabled, it
+    fills only missing paired/unpaired inputs while still searching the complete
+    protein assembly.
     """
     source_manifest = Path(input_path).expanduser().resolve()
     output_manifest = Path(output_manifest_path).expanduser().resolve()
@@ -87,7 +98,8 @@ def prepare_msa_bundle(
         protein_msa_query_sequence(entity.sequence) for entity in protein_entities
     ]
     needs_search = use_msa_server and any(
-        entity.paired_msa is None or entity.unpaired_msa is None
+        not _msa_is_supplied(entity.paired_msa, entity.paired_msa_path)
+        or not _msa_is_supplied(entity.unpaired_msa, entity.unpaired_msa_path)
         for entity in protein_entities
     )
 
@@ -123,26 +135,24 @@ def prepare_msa_bundle(
     for index, (entity, query, searched) in enumerate(
         zip(protein_entities, query_sequences, searched_by_entity, strict=True)
     ):
+        paired_text = _read_msa(entity.paired_msa, entity.paired_msa_path)
+        if paired_text is None and searched is not None:
+            paired_text = searched.paired
+        unpaired_text = _read_msa(entity.unpaired_msa, entity.unpaired_msa_path)
+        if unpaired_text is None and searched is not None:
+            unpaired_text = searched.unpaired
         paired_text = (
-            read_text_auto(entity.paired_msa)
-            if entity.paired_msa is not None
-            else (None if searched is None else searched.paired)
-        )
-        unpaired_text = (
-            read_text_auto(entity.unpaired_msa)
-            if entity.unpaired_msa is not None
-            else (None if searched is None else searched.unpaired)
-        )
-        paired_text = (
-            None if paired_text is None or not paired_text.strip() else paired_text
+            None
+            if paired_text is None
+            else (paired_text if paired_text.strip() else "")
         )
         unpaired_text = (
             None
-            if unpaired_text is None or not unpaired_text.strip()
-            else unpaired_text
+            if unpaired_text is None
+            else (unpaired_text if unpaired_text.strip() else "")
         )
 
-        if paired_text is not None or unpaired_text is not None:
+        if paired_text or unpaired_text:
             colabfold_a3ms_to_dataframe(
                 query_sequence=query,
                 paired_a3m=paired_text,
@@ -151,26 +161,32 @@ def prepare_msa_bundle(
             )
 
         first_id = entity.ids[0]
+        paired_content = paired_text
         paired_path = None
-        if paired_text is not None:
+        if paired_text:
             paired_absolute = write_zstd_text(
-                msa_dir / f"{prepared.name}_{first_id}_paired.a3m.zst",
+                msa_dir / f"{prepared.name}__{first_id}_pairedmsa.a3m.zst",
                 _canonical_text(paired_text),
             )
             paired_path = _relative_path(paired_absolute, output_manifest)
+            paired_content = None
 
+        unpaired_content = unpaired_text
         unpaired_path = None
-        if unpaired_text is not None:
+        if unpaired_text:
             unpaired_absolute = write_zstd_text(
-                msa_dir / f"{prepared.name}_{first_id}_unpaired.a3m.zst",
+                msa_dir / f"{prepared.name}__{first_id}_unpairedmsa.a3m.zst",
                 _canonical_text(unpaired_text),
             )
             unpaired_path = _relative_path(unpaired_absolute, output_manifest)
+            unpaired_content = None
 
         rewritten_proteins[index] = replace(
             entity,
-            paired_msa=paired_path,
-            unpaired_msa=unpaired_path,
+            paired_msa=paired_content,
+            paired_msa_path=paired_path,
+            unpaired_msa=unpaired_content,
+            unpaired_msa_path=unpaired_path,
         )
 
     protein_index = 0
@@ -209,25 +225,27 @@ def build_private_msa_directory(
     for entity in prepared.sequences:
         if entity.kind != "protein":
             continue
-        if entity.paired_msa is None and entity.unpaired_msa is None:
+        if not _msa_is_supplied(
+            entity.paired_msa, entity.paired_msa_path
+        ) and not _msa_is_supplied(entity.unpaired_msa, entity.unpaired_msa_path):
             continue
-        for path in (entity.paired_msa, entity.unpaired_msa):
+        for path in (entity.paired_msa_path, entity.unpaired_msa_path):
             if path is not None and not path.is_absolute():
                 raise PreparedMSAError(
                     "MSA paths must be resolved before private reconstruction; "
                     "call validate_resources(manifest_path) first"
                 )
+        paired_text = _read_msa(entity.paired_msa, entity.paired_msa_path)
+        unpaired_text = _read_msa(entity.unpaired_msa, entity.unpaired_msa_path)
+        if not (paired_text and paired_text.strip()) and not (
+            unpaired_text and unpaired_text.strip()
+        ):
+            continue
         query = protein_msa_query_sequence(entity.sequence)
         dataframe = colabfold_a3ms_to_dataframe(
             query_sequence=query,
-            paired_a3m=(
-                None if entity.paired_msa is None else read_text_auto(entity.paired_msa)
-            ),
-            unpaired_a3m=(
-                None
-                if entity.unpaired_msa is None
-                else read_text_auto(entity.unpaired_msa)
-            ),
+            paired_a3m=paired_text,
+            unpaired_a3m=unpaired_text,
             unpaired_fallback_source=entity.unpaired_msa_fallback_source,
         )
         parquet_path = msa_directory / expected_basename(query)

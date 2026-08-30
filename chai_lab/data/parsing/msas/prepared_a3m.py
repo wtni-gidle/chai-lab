@@ -93,16 +93,16 @@ def colabfold_a3ms_to_dataframe(
     unpaired_fallback_source: str = "auto",
 ) -> pd.DataFrame:
     """Reproduce Chai's native ColabFold paired/unpaired merge semantics."""
-    paired_records = _read_a3m_text(paired_a3m or "", "paired_msa")
-    unpaired_records = _read_a3m_text(unpaired_a3m or "", "unpaired_msa")
+    paired_records = _read_a3m_text(paired_a3m or "", "pairedMsa")
+    unpaired_records = _read_a3m_text(unpaired_a3m or "", "unpairedMsa")
     if not paired_records and not unpaired_records:
         raise PreparedMSAError(
             "At least one paired or unpaired A3M must contain records"
         )
     if paired_records:
-        _validate_records(paired_records, query_sequence, "paired_msa")
+        _validate_records(paired_records, query_sequence, "pairedMsa")
     if unpaired_records:
-        _validate_records(unpaired_records, query_sequence, "unpaired_msa")
+        _validate_records(unpaired_records, query_sequence, "unpairedMsa")
 
     paired_fasta: list[tuple[str, str, str]] = [
         (str(pairkey), record.header, record.sequence)

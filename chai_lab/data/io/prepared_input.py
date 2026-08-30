@@ -29,14 +29,20 @@ _TOP_LEVEL_FIELDS = {
 }
 _ENTITY_TYPES = {"protein", "rna", "dna", "ligand", "glycan"}
 _ENTITY_REQUIRED_FIELDS = {
-    "protein": {"id", "sequence", "paired_msa", "unpaired_msa"},
+    "protein": {"id", "sequence"},
     "rna": {"id", "sequence"},
     "dna": {"id", "sequence"},
     "ligand": {"id", "smiles"},
     "glycan": {"id", "sequence"},
 }
 _ENTITY_OPTIONAL_FIELDS = {
-    "protein": {"unpaired_msa_fallback_source"},
+    "protein": {
+        "pairedMsa",
+        "pairedMsaPath",
+        "unpairedMsa",
+        "unpairedMsaPath",
+        "unpairedMsaFallbackSource",
+    },
     "rna": set(),
     "dna": set(),
     "ligand": set(),
@@ -135,6 +141,14 @@ def _optional_path(value: Any, location: str) -> Path | None:
     return _expect_path(value, location)
 
 
+def _optional_msa_content(value: Any, location: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or "\x00" in value:
+        raise PreparedInputError(f"{location} must be a string or null")
+    return value
+
+
 def _resolve_path(path: Path, manifest_path: Path) -> Path:
     path = path.expanduser()
     if path.is_absolute():
@@ -149,8 +163,10 @@ class PreparedEntity:
     kind: str
     ids: tuple[str, ...]
     sequence: str
-    paired_msa: Path | None = None
-    unpaired_msa: Path | None = None
+    paired_msa: str | None = None
+    paired_msa_path: Path | None = None
+    unpaired_msa: str | None = None
+    unpaired_msa_path: Path | None = None
     unpaired_msa_fallback_source: str = "auto"
 
     @classmethod
@@ -190,22 +206,38 @@ class PreparedEntity:
         )
 
         paired_msa = None
+        paired_msa_path = None
         unpaired_msa = None
+        unpaired_msa_path = None
         fallback_source = "auto"
         if kind == "protein":
-            paired_msa = _optional_path(
-                data["paired_msa"], f"{entity_location}.paired_msa"
+            paired_msa = _optional_msa_content(
+                data.get("pairedMsa"), f"{entity_location}.pairedMsa"
             )
-            unpaired_msa = _optional_path(
-                data["unpaired_msa"], f"{entity_location}.unpaired_msa"
+            paired_msa_path = _optional_path(
+                data.get("pairedMsaPath"), f"{entity_location}.pairedMsaPath"
             )
+            if paired_msa is not None and paired_msa_path is not None:
+                raise PreparedInputError(
+                    f"{entity_location} can set only one of pairedMsa/pairedMsaPath"
+                )
+            unpaired_msa = _optional_msa_content(
+                data.get("unpairedMsa"), f"{entity_location}.unpairedMsa"
+            )
+            unpaired_msa_path = _optional_path(
+                data.get("unpairedMsaPath"), f"{entity_location}.unpairedMsaPath"
+            )
+            if unpaired_msa is not None and unpaired_msa_path is not None:
+                raise PreparedInputError(
+                    f"{entity_location} can set only one of unpairedMsa/unpairedMsaPath"
+                )
             fallback_source = _expect_nonempty_string(
-                data.get("unpaired_msa_fallback_source", "auto"),
-                f"{entity_location}.unpaired_msa_fallback_source",
+                data.get("unpairedMsaFallbackSource", "auto"),
+                f"{entity_location}.unpairedMsaFallbackSource",
             )
             if fallback_source not in _UNPAIRED_FALLBACK_SOURCES:
                 raise PreparedInputError(
-                    f"{entity_location}.unpaired_msa_fallback_source must be "
+                    f"{entity_location}.unpairedMsaFallbackSource must be "
                     "'auto' or a supported Chai MSA source"
                 )
 
@@ -214,7 +246,9 @@ class PreparedEntity:
             ids=ids,
             sequence=sequence,
             paired_msa=paired_msa,
+            paired_msa_path=paired_msa_path,
             unpaired_msa=unpaired_msa,
+            unpaired_msa_path=unpaired_msa_path,
             unpaired_msa_fallback_source=fallback_source,
         )
 
@@ -225,19 +259,15 @@ class PreparedEntity:
             sequence_field: self.sequence,
         }
         if self.kind == "protein":
-            entity.update(
-                {
-                    "paired_msa": (
-                        None if self.paired_msa is None else os.fspath(self.paired_msa)
-                    ),
-                    "unpaired_msa": (
-                        None
-                        if self.unpaired_msa is None
-                        else os.fspath(self.unpaired_msa)
-                    ),
-                    "unpaired_msa_fallback_source": self.unpaired_msa_fallback_source,
-                }
-            )
+            if self.paired_msa_path is None:
+                entity["pairedMsa"] = self.paired_msa
+            else:
+                entity["pairedMsaPath"] = os.fspath(self.paired_msa_path)
+            if self.unpaired_msa_path is None:
+                entity["unpairedMsa"] = self.unpaired_msa
+            else:
+                entity["unpairedMsaPath"] = os.fspath(self.unpaired_msa_path)
+            entity["unpairedMsaFallbackSource"] = self.unpaired_msa_fallback_source
         return {self.kind: entity}
 
     def resolved(self, manifest_path: Path) -> "PreparedEntity":
@@ -245,15 +275,17 @@ class PreparedEntity:
             kind=self.kind,
             ids=self.ids,
             sequence=self.sequence,
-            paired_msa=(
+            paired_msa=self.paired_msa,
+            paired_msa_path=(
                 None
-                if self.paired_msa is None
-                else _resolve_path(self.paired_msa, manifest_path)
+                if self.paired_msa_path is None
+                else _resolve_path(self.paired_msa_path, manifest_path)
             ),
-            unpaired_msa=(
+            unpaired_msa=self.unpaired_msa,
+            unpaired_msa_path=(
                 None
-                if self.unpaired_msa is None
-                else _resolve_path(self.unpaired_msa, manifest_path)
+                if self.unpaired_msa_path is None
+                else _resolve_path(self.unpaired_msa_path, manifest_path)
             ),
             unpaired_msa_fallback_source=self.unpaired_msa_fallback_source,
         )
@@ -429,15 +461,15 @@ class PreparedInput:
         """Resolve paths, require every declared resource, and return the copy."""
         resolved = self.resolved(manifest_path)
         for index, entity in enumerate(resolved.sequences):
-            if entity.paired_msa is not None:
+            if entity.paired_msa_path is not None:
                 _require_file(
-                    entity.paired_msa,
-                    f"sequences[{index}].protein.paired_msa",
+                    entity.paired_msa_path,
+                    f"sequences[{index}].protein.pairedMsaPath",
                 )
-            if entity.unpaired_msa is not None:
+            if entity.unpaired_msa_path is not None:
                 _require_file(
-                    entity.unpaired_msa,
-                    f"sequences[{index}].protein.unpaired_msa",
+                    entity.unpaired_msa_path,
+                    f"sequences[{index}].protein.unpairedMsaPath",
                 )
         if resolved.templates is not None:
             _require_file(resolved.templates.hits_path, "templates.hits_path")
