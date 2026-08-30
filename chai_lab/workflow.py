@@ -12,7 +12,6 @@ from chai_lab.data.io.prepared_input import (
     PreparedInputError,
     load_prepared_input,
     prepared_input_path,
-    validate_target_name,
 )
 
 
@@ -28,7 +27,7 @@ class WorkflowPlan:
     predictions_dir: Path
     run_data_pipeline: bool
     run_inference: bool
-    prepared_input: PreparedInput | None
+    prepared_input: PreparedInput
 
 
 def build_workflow_plan(
@@ -54,24 +53,16 @@ def build_workflow_plan(
         raise FileNotFoundError(f"Input path does not exist or is not a file: {source}")
     output_root = Path(output_dir).expanduser().resolve()
 
-    prepared: PreparedInput | None = None
-    if run_data_pipeline:
-        if source.suffix.lower() == ".json":
-            raise PreparedInputError(
-                "The data pipeline expects a FASTA input, not a prepared JSON."
-            )
-        name = validate_target_name(source.stem)
-        manifest = prepared_input_path(output_root, name)
-    else:
-        if source.suffix.lower() != ".json":
-            raise PreparedInputError(
-                "Inference-only mode expects a prepared *_data.json input."
-            )
-        prepared = load_prepared_input(source)
-        if validate_resources:
-            prepared = prepared.validate_resources(source)
-        name = prepared.name
-        manifest = source
+    if source.suffix.lower() != ".json":
+        raise PreparedInputError(
+            "The wrapper expects a self-contained JSON input for every stage."
+        )
+
+    prepared = load_prepared_input(source)
+    if validate_resources:
+        prepared = prepared.validate_resources(source)
+    name = prepared.name
+    manifest = prepared_input_path(output_root, name) if run_data_pipeline else source
 
     job_dir = output_root / name
     return WorkflowPlan(

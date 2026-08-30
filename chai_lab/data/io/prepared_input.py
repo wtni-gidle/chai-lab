@@ -13,31 +13,51 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from chai_lab.data.parsing.msas.data_source import MSADataSource
+from chai_lab.data.io.entity_input import Input
+from chai_lab.data.parsing.structure.entity_type import EntityType
 
 PREPARED_INPUT_VERSION = 1
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
-_SEQUENCE_HASH = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = {
     "version",
     "name",
-    "fasta_path",
+    "sequences",
     "use_esm_embeddings",
-    "fasta_names_as_cif_chains",
-    "msas",
+    "entity_ids_as_cif_chains",
     "templates",
     "constraint_path",
 }
-_MSA_FIELDS = {
-    "chains",
-    "sequence_hash",
-    "paired_msa",
-    "unpaired_msa",
-    "unpaired_source_database",
+_ENTITY_TYPES = {"protein", "rna", "dna", "ligand", "glycan"}
+_ENTITY_REQUIRED_FIELDS = {
+    "protein": {"id", "sequence", "paired_msa", "unpaired_msa"},
+    "rna": {"id", "sequence"},
+    "dna": {"id", "sequence"},
+    "ligand": {"id", "smiles"},
+    "glycan": {"id", "sequence"},
+}
+_ENTITY_OPTIONAL_FIELDS = {
+    "protein": {"unpaired_msa_fallback_source"},
+    "rna": set(),
+    "dna": set(),
+    "ligand": set(),
+    "glycan": set(),
+}
+_ENTITY_TYPE_VALUES = {
+    "protein": EntityType.PROTEIN.value,
+    "rna": EntityType.RNA.value,
+    "dna": EntityType.DNA.value,
+    "ligand": EntityType.LIGAND.value,
+    "glycan": EntityType.MANUAL_GLYCAN.value,
+}
+_UNPAIRED_FALLBACK_SOURCES = {
+    "auto",
+    "bfd_uniclust",
+    "mgnify",
+    "uniprot",
+    "uniref90",
 }
 _TEMPLATE_FIELDS = {"hits_path", "cif_directory", "query_id_mode"}
 _QUERY_ID_MODES = {"entity_name", "sequence_hash"}
-_MSA_SOURCES = {"auto", *(source.value for source in MSADataSource)}
 
 
 class PreparedInputError(ValueError):
@@ -54,17 +74,29 @@ def validate_target_name(name: str) -> str:
     return name
 
 
+def _validate_entity_id(entity_id: Any, location: str) -> str:
+    if not isinstance(entity_id, str) or not _SAFE_NAME.fullmatch(entity_id):
+        raise PreparedInputError(
+            f"{location} must contain only ASCII letters, digits, '_', '-', and '.', "
+            "and must start with a letter, digit, or '_'"
+        )
+    return entity_id
+
+
 def _expect_mapping(value: Any, location: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise PreparedInputError(f"{location} must be a JSON object")
     return value
 
 
-def _expect_exact_fields(
-    value: Mapping[str, Any], expected: set[str], location: str
+def _expect_fields(
+    value: Mapping[str, Any],
+    required: set[str],
+    optional: set[str],
+    location: str,
 ) -> None:
-    missing = expected - value.keys()
-    unknown = value.keys() - expected
+    missing = required - value.keys()
+    unknown = value.keys() - required - optional
     if missing:
         raise PreparedInputError(
             f"{location} is missing fields: {', '.join(sorted(missing))}"
@@ -73,6 +105,12 @@ def _expect_exact_fields(
         raise PreparedInputError(
             f"{location} has unknown fields: {', '.join(sorted(unknown))}"
         )
+
+
+def _expect_exact_fields(
+    value: Mapping[str, Any], expected: set[str], location: str
+) -> None:
+    _expect_fields(value, expected, set(), location)
 
 
 def _expect_bool(value: Any, location: str) -> bool:
@@ -105,79 +143,137 @@ def _resolve_path(path: Path, manifest_path: Path) -> Path:
 
 
 @dataclass(frozen=True)
-class PreparedMsa:
-    """Persistent paired and unpaired MSAs for one unique protein sequence."""
+class PreparedEntity:
+    """One unique molecular entity, possibly instantiated as several chains."""
 
-    chains: tuple[str, ...]
-    sequence_hash: str
-    paired_msa: Path
-    unpaired_msa: Path
-    unpaired_source_database: str
+    kind: str
+    ids: tuple[str, ...]
+    sequence: str
+    paired_msa: Path | None = None
+    unpaired_msa: Path | None = None
+    unpaired_msa_fallback_source: str = "auto"
 
     @classmethod
-    def from_dict(cls, value: Any, index: int) -> "PreparedMsa":
-        location = f"msas[{index}]"
-        data = _expect_mapping(value, location)
-        _expect_exact_fields(data, _MSA_FIELDS, location)
-
-        raw_chains = data["chains"]
-        if not isinstance(raw_chains, list) or not raw_chains:
-            raise PreparedInputError(f"{location}.chains must be a non-empty list")
-        chains = tuple(
-            _expect_nonempty_string(chain, f"{location}.chains[{chain_index}]")
-            for chain_index, chain in enumerate(raw_chains)
-        )
-        if len(chains) != len(set(chains)):
-            raise PreparedInputError(f"{location}.chains contains duplicates")
-
-        source = _expect_nonempty_string(
-            data["unpaired_source_database"],
-            f"{location}.unpaired_source_database",
-        )
-        if source not in _MSA_SOURCES:
+    def from_dict(cls, value: Any, index: int) -> "PreparedEntity":
+        location = f"sequences[{index}]"
+        wrapper = _expect_mapping(value, location)
+        if len(wrapper) != 1:
             raise PreparedInputError(
-                f"{location}.unpaired_source_database must be 'auto' or a "
-                "Chai MSA data source"
+                f"{location} must contain exactly one molecular entity type"
             )
+        kind = next(iter(wrapper))
+        if kind not in _ENTITY_TYPES:
+            raise PreparedInputError(f"{location} has unsupported entity type {kind!r}")
 
-        sequence_hash = _expect_nonempty_string(
-            data["sequence_hash"], f"{location}.sequence_hash"
+        entity_location = f"{location}.{kind}"
+        data = _expect_mapping(wrapper[kind], entity_location)
+        _expect_fields(
+            data,
+            _ENTITY_REQUIRED_FIELDS[kind],
+            _ENTITY_OPTIONAL_FIELDS[kind],
+            entity_location,
         )
-        if not _SEQUENCE_HASH.fullmatch(sequence_hash):
-            raise PreparedInputError(
-                f"{location}.sequence_hash must be a lowercase SHA-256 hex digest"
+
+        raw_ids = data["id"]
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise PreparedInputError(f"{entity_location}.id must be a non-empty list")
+        ids = tuple(
+            _validate_entity_id(entity_id, f"{entity_location}.id[{id_index}]")
+            for id_index, entity_id in enumerate(raw_ids)
+        )
+        if len(ids) != len(set(ids)):
+            raise PreparedInputError(f"{entity_location}.id contains duplicates")
+
+        sequence_field = "smiles" if kind == "ligand" else "sequence"
+        sequence = _expect_nonempty_string(
+            data[sequence_field], f"{entity_location}.{sequence_field}"
+        )
+
+        paired_msa = None
+        unpaired_msa = None
+        fallback_source = "auto"
+        if kind == "protein":
+            paired_msa = _optional_path(
+                data["paired_msa"], f"{entity_location}.paired_msa"
             )
+            unpaired_msa = _optional_path(
+                data["unpaired_msa"], f"{entity_location}.unpaired_msa"
+            )
+            fallback_source = _expect_nonempty_string(
+                data.get("unpaired_msa_fallback_source", "auto"),
+                f"{entity_location}.unpaired_msa_fallback_source",
+            )
+            if fallback_source not in _UNPAIRED_FALLBACK_SOURCES:
+                raise PreparedInputError(
+                    f"{entity_location}.unpaired_msa_fallback_source must be "
+                    "'auto' or a supported Chai MSA source"
+                )
 
         return cls(
-            chains=chains,
-            sequence_hash=sequence_hash,
-            paired_msa=_expect_path(data["paired_msa"], f"{location}.paired_msa"),
-            unpaired_msa=_expect_path(data["unpaired_msa"], f"{location}.unpaired_msa"),
-            unpaired_source_database=source,
+            kind=kind,
+            ids=ids,
+            sequence=sequence,
+            paired_msa=paired_msa,
+            unpaired_msa=unpaired_msa,
+            unpaired_msa_fallback_source=fallback_source,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "chains": list(self.chains),
-            "sequence_hash": self.sequence_hash,
-            "paired_msa": os.fspath(self.paired_msa),
-            "unpaired_msa": os.fspath(self.unpaired_msa),
-            "unpaired_source_database": self.unpaired_source_database,
+        sequence_field = "smiles" if self.kind == "ligand" else "sequence"
+        entity: dict[str, Any] = {
+            "id": list(self.ids),
+            sequence_field: self.sequence,
         }
+        if self.kind == "protein":
+            entity.update(
+                {
+                    "paired_msa": (
+                        None if self.paired_msa is None else os.fspath(self.paired_msa)
+                    ),
+                    "unpaired_msa": (
+                        None
+                        if self.unpaired_msa is None
+                        else os.fspath(self.unpaired_msa)
+                    ),
+                    "unpaired_msa_fallback_source": self.unpaired_msa_fallback_source,
+                }
+            )
+        return {self.kind: entity}
 
-    def resolved(self, manifest_path: Path) -> "PreparedMsa":
-        return PreparedMsa(
-            chains=self.chains,
-            sequence_hash=self.sequence_hash,
-            paired_msa=_resolve_path(self.paired_msa, manifest_path),
-            unpaired_msa=_resolve_path(self.unpaired_msa, manifest_path),
-            unpaired_source_database=self.unpaired_source_database,
+    def resolved(self, manifest_path: Path) -> "PreparedEntity":
+        return PreparedEntity(
+            kind=self.kind,
+            ids=self.ids,
+            sequence=self.sequence,
+            paired_msa=(
+                None
+                if self.paired_msa is None
+                else _resolve_path(self.paired_msa, manifest_path)
+            ),
+            unpaired_msa=(
+                None
+                if self.unpaired_msa is None
+                else _resolve_path(self.unpaired_msa, manifest_path)
+            ),
+            unpaired_msa_fallback_source=self.unpaired_msa_fallback_source,
         )
+
+    def to_chai_inputs(self) -> list[Input]:
+        """Expand entity IDs into the same Input objects produced by FASTA parsing."""
+        entity_type = _ENTITY_TYPE_VALUES[self.kind]
+        return [
+            Input(
+                sequence=self.sequence,
+                entity_type=entity_type,
+                entity_name=entity_id,
+            )
+            for entity_id in self.ids
+        ]
 
 
 @dataclass(frozen=True)
 class PreparedTemplates:
-    """Template hits and the job-local structure directory used to resolve them."""
+    """Provisional template fields; the contract is finalized in stage 3."""
 
     hits_path: Path
     cif_directory: Path
@@ -220,14 +316,13 @@ class PreparedTemplates:
 
 @dataclass(frozen=True)
 class PreparedInput:
-    """Versioned, editable manifest for one Chai-1 prediction target."""
+    """Versioned, self-contained manifest for one Chai-1 prediction target."""
 
     version: int
     name: str
-    fasta_path: Path
+    sequences: tuple[PreparedEntity, ...]
     use_esm_embeddings: bool
-    fasta_names_as_cif_chains: bool
-    msas: tuple[PreparedMsa, ...]
+    entity_ids_as_cif_chains: bool
     templates: PreparedTemplates | None
     constraint_path: Path | None
 
@@ -242,27 +337,33 @@ class PreparedInput:
                 f"version must be the integer {PREPARED_INPUT_VERSION}"
             )
 
-        raw_msas = data["msas"]
-        if not isinstance(raw_msas, list):
-            raise PreparedInputError("msas must be a list")
-        msas = tuple(
-            PreparedMsa.from_dict(msa, index) for index, msa in enumerate(raw_msas)
+        raw_sequences = data["sequences"]
+        if not isinstance(raw_sequences, list) or not raw_sequences:
+            raise PreparedInputError("sequences must be a non-empty list")
+        sequences = tuple(
+            PreparedEntity.from_dict(entity, index)
+            for index, entity in enumerate(raw_sequences)
         )
 
-        seen_chains: set[str] = set()
-        seen_hashes: set[str] = set()
-        for index, msa in enumerate(msas):
-            duplicate_chains = seen_chains.intersection(msa.chains)
-            if duplicate_chains:
+        seen_ids: set[str] = set()
+        seen_proteins: dict[str, int] = {}
+        for index, entity in enumerate(sequences):
+            duplicate_ids = seen_ids.intersection(entity.ids)
+            if duplicate_ids:
                 raise PreparedInputError(
-                    f"msas[{index}] reuses chains: {', '.join(sorted(duplicate_chains))}"
+                    f"sequences[{index}] reuses entity IDs: "
+                    f"{', '.join(sorted(duplicate_ids))}"
                 )
-            if msa.sequence_hash in seen_hashes:
-                raise PreparedInputError(
-                    f"msas[{index}] reuses sequence_hash {msa.sequence_hash!r}"
-                )
-            seen_chains.update(msa.chains)
-            seen_hashes.add(msa.sequence_hash)
+            seen_ids.update(entity.ids)
+            if entity.kind == "protein":
+                normalized_sequence = entity.sequence.upper()
+                if normalized_sequence in seen_proteins:
+                    previous_index = seen_proteins[normalized_sequence]
+                    raise PreparedInputError(
+                        f"sequences[{index}] duplicates the protein sequence from "
+                        f"sequences[{previous_index}]; merge their id lists"
+                    )
+                seen_proteins[normalized_sequence] = index
 
         raw_templates = data["templates"]
         templates = (
@@ -274,15 +375,14 @@ class PreparedInput:
         return cls(
             version=version,
             name=validate_target_name(data["name"]),
-            fasta_path=_expect_path(data["fasta_path"], "fasta_path"),
+            sequences=sequences,
             use_esm_embeddings=_expect_bool(
                 data["use_esm_embeddings"], "use_esm_embeddings"
             ),
-            fasta_names_as_cif_chains=_expect_bool(
-                data["fasta_names_as_cif_chains"],
-                "fasta_names_as_cif_chains",
+            entity_ids_as_cif_chains=_expect_bool(
+                data["entity_ids_as_cif_chains"],
+                "entity_ids_as_cif_chains",
             ),
-            msas=msas,
             templates=templates,
             constraint_path=_optional_path(data["constraint_path"], "constraint_path"),
         )
@@ -291,10 +391,9 @@ class PreparedInput:
         return {
             "version": self.version,
             "name": self.name,
-            "fasta_path": os.fspath(self.fasta_path),
+            "sequences": [entity.to_dict() for entity in self.sequences],
             "use_esm_embeddings": self.use_esm_embeddings,
-            "fasta_names_as_cif_chains": self.fasta_names_as_cif_chains,
-            "msas": [msa.to_dict() for msa in self.msas],
+            "entity_ids_as_cif_chains": self.entity_ids_as_cif_chains,
             "templates": None if self.templates is None else self.templates.to_dict(),
             "constraint_path": (
                 None
@@ -309,10 +408,11 @@ class PreparedInput:
         return PreparedInput(
             version=self.version,
             name=self.name,
-            fasta_path=_resolve_path(self.fasta_path, manifest_path),
+            sequences=tuple(
+                entity.resolved(manifest_path) for entity in self.sequences
+            ),
             use_esm_embeddings=self.use_esm_embeddings,
-            fasta_names_as_cif_chains=self.fasta_names_as_cif_chains,
-            msas=tuple(msa.resolved(manifest_path) for msa in self.msas),
+            entity_ids_as_cif_chains=self.entity_ids_as_cif_chains,
             templates=(
                 None
                 if self.templates is None
@@ -326,12 +426,19 @@ class PreparedInput:
         )
 
     def validate_resources(self, manifest_path: str | Path) -> "PreparedInput":
-        """Resolve paths, require declared resources to exist, and return the copy."""
+        """Resolve paths, require every declared resource, and return the copy."""
         resolved = self.resolved(manifest_path)
-        _require_file(resolved.fasta_path, "fasta_path")
-        for index, msa in enumerate(resolved.msas):
-            _require_file(msa.paired_msa, f"msas[{index}].paired_msa")
-            _require_file(msa.unpaired_msa, f"msas[{index}].unpaired_msa")
+        for index, entity in enumerate(resolved.sequences):
+            if entity.paired_msa is not None:
+                _require_file(
+                    entity.paired_msa,
+                    f"sequences[{index}].protein.paired_msa",
+                )
+            if entity.unpaired_msa is not None:
+                _require_file(
+                    entity.unpaired_msa,
+                    f"sequences[{index}].protein.unpaired_msa",
+                )
         if resolved.templates is not None:
             _require_file(resolved.templates.hits_path, "templates.hits_path")
             _require_directory(
@@ -340,6 +447,14 @@ class PreparedInput:
         if resolved.constraint_path is not None:
             _require_file(resolved.constraint_path, "constraint_path")
         return resolved
+
+    def to_chai_inputs(self) -> list[Input]:
+        """Convert JSON entities to the native entity inputs used by Chai-1."""
+        return [
+            chai_input
+            for entity in self.sequences
+            for chai_input in entity.to_chai_inputs()
+        ]
 
 
 def _require_file(path: Path, location: str) -> None:
@@ -355,7 +470,7 @@ def _require_directory(path: Path, location: str) -> None:
 
 
 def load_prepared_input(path: str | Path) -> PreparedInput:
-    """Read and validate a prepared JSON without resolving its declared paths."""
+    """Read and validate a self-contained prepared JSON."""
     path = Path(path).expanduser()
     try:
         with path.open("r", encoding="utf-8") as handle:

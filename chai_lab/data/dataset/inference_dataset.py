@@ -4,7 +4,6 @@
 
 import logging
 import string
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from chai_lab.data.dataset.structure.all_atom_structure_context import (
     AllAtomStructureContext,
 )
 from chai_lab.data.dataset.structure.chain import Chain
+from chai_lab.data.io.entity_input import Input
 from chai_lab.data.parsing.fasta import get_residue_name, read_fasta
 from chai_lab.data.parsing.glycans import glycan_string_residues
 from chai_lab.data.parsing.input_validation import (
@@ -34,13 +34,6 @@ from chai_lab.data.residue_constants import (
 from chai_lab.data.sources.rdkit import RefConformerGenerator
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Input:
-    sequence: str
-    entity_type: int
-    entity_name: str
 
 
 def get_lig_residues(

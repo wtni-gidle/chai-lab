@@ -15,11 +15,19 @@ Stage 0 established the fork, branch, and upstream baseline. Stage 1 adds the
 side-effect-free prepared-input foundation; there are still no native CLI or inference
 behavior changes.
 
-`chai_lab.data.io.prepared_input` defines a strict, versioned `_data.json` schema,
-relative-path resolution, declared-resource checks, atomic JSON writing, and the
-`<output>/<name>/<name>_data.json` path rule. The top-level `name` is the formal target
-identity, so renaming the JSON file does not rename the target. Unknown fields and
-unsafe target names are rejected instead of being silently corrected.
+`chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
+`_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
+writing, and the `<output>/<name>/<name>_data.json` path rule. Molecular entities and
+sequences live directly in JSON; there is no `fasta_path`. Protein MSA paths are stored
+with their protein entity. Sequence hashes are derived internally rather than persisted.
+The top-level `name` is the formal target identity, so renaming the JSON file does not
+rename the target. Unknown fields and unsafe target/entity names are rejected instead
+of being silently corrected.
+
+Prepared entities expand directly to the lightweight native `Input` objects also used
+by the FASTA reader. A protein entry with `id: [A, B]` therefore becomes two native
+chain inputs while keeping one sequence and one pair of MSA paths. The public native
+FASTA path remains available and behavior-compatible.
 
 `chai_lab.workflow.build_workflow_plan` validates data/inference stage combinations and
 calculates target, job, prepared-input, and prediction locations. In stage 1 it only

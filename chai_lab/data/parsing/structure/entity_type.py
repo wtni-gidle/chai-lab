@@ -4,8 +4,10 @@
 
 import logging
 from enum import Enum
+from typing import TYPE_CHECKING
 
-import gemmi
+if TYPE_CHECKING:
+    import gemmi
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,9 @@ class EntityType(Enum):
     MANUAL_GLYCAN = 7  # NOTE glycan parsing
 
 
-def get_entity_type(entity: gemmi.Entity) -> EntityType:
+def get_entity_type(entity: "gemmi.Entity") -> EntityType:
+    import gemmi
+
     match (entity.entity_type, entity.polymer_type):
         case (
             gemmi.EntityType.Polymer,
