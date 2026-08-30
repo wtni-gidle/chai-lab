@@ -17,9 +17,13 @@ from chai_lab.data.io.compression import read_text_auto, write_zstd_text
 from chai_lab.data.io.prepared_input import (
     PreparedEntity,
     PreparedInput,
-    PreparedTemplates,
     load_prepared_input,
     write_prepared_input,
+)
+from chai_lab.data.io.prepared_resources import (
+    TemplateDownloader,
+    materialize_restraint_bundle,
+    materialize_template_bundle,
 )
 from chai_lab.data.parsing.msas.prepared_a3m import (
     PreparedMSAError,
@@ -57,77 +61,82 @@ def _read_msa(content: str | None, path: Path | None) -> str | None:
     return content
 
 
-def _rebase_templates(
-    templates: PreparedTemplates | None,
-    source_manifest: Path,
-    output_manifest: Path,
-) -> PreparedTemplates | None:
-    if templates is None:
-        return None
-    resolved = templates.resolved(source_manifest)
-    return replace(
-        resolved,
-        hits_path=_relative_path(resolved.hits_path, output_manifest),
-        cif_directory=_relative_path(resolved.cif_directory, output_manifest),
-    )
-
-
-def prepare_msa_bundle(
+def prepare_data_bundle(
     input_path: str | Path,
     output_manifest_path: str | Path,
     *,
     use_msa_server: bool,
+    use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     searcher: MSASearcher | None = None,
+    template_downloader: TemplateDownloader | None = None,
 ) -> PreparedInput:
-    """Write canonical A3M.zst files and the resulting ``*_data.json``.
+    """Materialize MSA, template, and restraint data into a prepared bundle.
 
     Declared inline MSA content or MSA paths win. If server search is enabled, it
     fills only missing paired/unpaired inputs while still searching the complete
-    protein assembly.
+    protein assembly. Template-server results and declared templates are mutually
+    exclusive.
     """
     source_manifest = Path(input_path).expanduser().resolve()
     output_manifest = Path(output_manifest_path).expanduser().resolve()
     prepared = load_prepared_input(source_manifest)
-    resolved = prepared.resolved(source_manifest)
+    resolved = prepared.validate_resources(source_manifest)
 
     protein_entities = [
         entity for entity in resolved.sequences if entity.kind == "protein"
     ]
+    if prepared.templates is not None and use_templates_server:
+        raise PreparedMSAError(
+            "Cannot combine declared templates with use_templates_server=True"
+        )
     query_sequences = [
         protein_msa_query_sequence(entity.sequence) for entity in protein_entities
     ]
-    needs_search = use_msa_server and any(
-        not _msa_is_supplied(entity.paired_msa, entity.paired_msa_path)
-        or not _msa_is_supplied(entity.unpaired_msa, entity.unpaired_msa_path)
+    missing_msas = any(
+        (
+            not _msa_is_supplied(entity.paired_msa, entity.paired_msa_path)
+            or not _msa_is_supplied(entity.unpaired_msa, entity.unpaired_msa_path)
+        )
         for entity in protein_entities
+    )
+    needs_search = (use_msa_server and missing_msas) or (
+        use_templates_server and bool(protein_entities)
     )
 
     searched_by_entity: list[A3MResult | None] = [None] * len(protein_entities)
+    expanded_queries = [
+        query
+        for query, entity in zip(query_sequences, protein_entities, strict=True)
+        for _ in entity.ids
+    ]
+    server_m8_text: str | None = None
     if needs_search:
         if searcher is None:
             from chai_lab.data.dataset.msas.colabfold import generate_colabfold_a3ms
 
             searcher = generate_colabfold_a3ms
-        expanded_queries = [
-            query
-            for query, entity in zip(query_sequences, protein_entities, strict=True)
-            for _ in entity.ids
-        ]
         with tempfile.TemporaryDirectory(prefix="chai_msa_search_") as temporary:
-            search_results, _ = searcher(
+            search_results, template_hits_path = searcher(
                 expanded_queries,
                 Path(temporary),
                 msa_server_url,
-                False,
+                use_templates_server,
             )
+            if use_templates_server:
+                if template_hits_path is None or not template_hits_path.is_file():
+                    raise PreparedMSAError(
+                        "Template server did not return a readable M8 file"
+                    )
+                server_m8_text = read_text_auto(template_hits_path)
         if len(search_results) != len(expanded_queries):
             raise PreparedMSAError(
                 "ColabFold search returned a different number of per-chain MSAs"
             )
         cursor = 0
         for index, entity in enumerate(protein_entities):
-            searched_by_entity[index] = search_results[cursor]
+            if use_msa_server:
+                searched_by_entity[index] = search_results[cursor]
             cursor += len(entity.ids)
 
     msa_dir = output_manifest.parent / "msas"
@@ -198,21 +207,53 @@ def prepare_msa_bundle(
         else:
             rewritten_entities.append(original_entity)
 
-    resolved_constraint = (
-        None
-        if resolved.constraint_path is None
-        else _relative_path(resolved.constraint_path, output_manifest)
-    )
-    bundled = replace(
+    bundled_msas = replace(
         prepared,
         sequences=tuple(rewritten_entities),
-        templates=_rebase_templates(
-            prepared.templates, source_manifest, output_manifest
-        ),
-        constraint_path=resolved_constraint,
+        templates=None,
+        constraint_path=None,
+    )
+    bundled_templates = materialize_template_bundle(
+        prepared=prepared,
+        resolved=resolved,
+        output_manifest=output_manifest,
+        query_sequences=[entity.sequence for entity in protein_entities],
+        expanded_query_sequences=[
+            entity.sequence for entity in protein_entities for _ in entity.ids
+        ],
+        server_m8_text=server_m8_text,
+        downloader=template_downloader,
+    )
+    bundled_constraint = materialize_restraint_bundle(
+        prepared=prepared,
+        resolved=resolved,
+        output_manifest=output_manifest,
+    )
+    bundled = replace(
+        bundled_msas,
+        templates=bundled_templates,
+        constraint_path=bundled_constraint,
     )
     write_prepared_input(bundled, output_manifest)
     return bundled
+
+
+def prepare_msa_bundle(
+    input_path: str | Path,
+    output_manifest_path: str | Path,
+    *,
+    use_msa_server: bool,
+    msa_server_url: str = "https://api.colabfold.com",
+    searcher: MSASearcher | None = None,
+) -> PreparedInput:
+    """Compatibility API for the stage-2 MSA-only prepared workflow."""
+    return prepare_data_bundle(
+        input_path,
+        output_manifest_path,
+        use_msa_server=use_msa_server,
+        msa_server_url=msa_server_url,
+        searcher=searcher,
+    )
 
 
 def build_private_msa_directory(

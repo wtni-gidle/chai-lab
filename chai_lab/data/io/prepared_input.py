@@ -305,7 +305,7 @@ class PreparedEntity:
 
 @dataclass(frozen=True)
 class PreparedTemplates:
-    """Provisional template fields; the contract is finalized in stage 3."""
+    """Template hit table, local CIF cache, and M8 query-ID convention."""
 
     hits_path: Path
     cif_directory: Path

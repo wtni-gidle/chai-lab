@@ -12,8 +12,9 @@ The detailed Chinese design and operating notes are maintained in
 ## Implementation status
 
 Stage 0 established the fork, branch, and upstream baseline. Stage 1 added the
-side-effect-free prepared-input foundation. Stage 2 adds the MSA handoff APIs; the
-native CLI and prediction writer are still unchanged.
+side-effect-free prepared-input foundation. Stage 2 added the MSA handoff APIs.
+Stage 3 adds template and restraint handoff; the native CLI and prediction writer are
+still unchanged.
 
 `chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
 `_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
@@ -55,12 +56,29 @@ synthetic two-chain test compares native and persisted-then-reconstructed Parque
 row for row. The internal sequence hash is still derived at runtime and is not added to
 JSON.
 
+Stage 3 generalizes the data API to `prepare_data_bundle()`. In addition to MSA files,
+it publishes template hits as `templates/all_chain_templates.m8`, normalizes every CIF
+referenced by the M8 table into `templates/cifs/<PDB>.cif.gz`, and copies a native
+restraint table to `constraints/<target>.restraints.csv`. All paths written to the
+prepared JSON are relative to that JSON. A declared template bundle uses M8 entity
+names or sequence hashes according to `templates.query_id_mode`; a ColabFold template
+search remaps server IDs `101, 102, ...` to the sequence hashes used by Chai at
+inference. Declared and server templates cannot be combined accidentally.
+
+The restraint CSV is parsed by Chai's native parser during preparation and its chain
+names are checked against either JSON entity IDs or automatic A/B/C subchain names,
+according to `entity_ids_as_cif_chains`. `get_prepared_inference_resources()` converts a
+resolved prepared JSON into Chai's native M8 path, job-local CIF directory, lookup mode,
+and restraint path. It performs no model work or downloads. The older
+`prepare_msa_bundle()` remains as a compatibility wrapper with template-server search
+disabled.
+
 Planned work is intentionally gated and will be implemented one stage at a time:
 
 1. prepared JSON schema and workflow foundation (implemented in stage 1);
 2. paired/unpaired A3M.zst persistence and private Parquet reconstruction (implemented
    in stage 2);
-3. template and restraint handoff;
+3. template and restraint handoff (implemented in stage 3);
 4. multi-seed CLI and AF3-style result writer;
 5. lightweight skip, concurrency hardening, and `run_chai1.sh`;
 6. native/combined/split and GPU validation.
@@ -91,3 +109,13 @@ the early stages.
   equality.
 - `python3 -m compileall -q chai_lab tests`, focused Ruff checks, Ruff formatting, and
   `git diff --check` passed.
+
+## Stage 3 validation
+
+- 32 tests plus 7 parameterized subtests passed in an isolated Python 3.12 environment.
+- Coverage includes local plain/gzip/zstd template CIFs, canonical job-local CIF output,
+  server M8 ID remapping, entity-name query validation, download fallback injection,
+  declared/server conflict rejection, native restraint parsing, both restraint chain-ID
+  conventions, and resolved inference-resource mapping.
+- Focused Ruff checks and formatting, `python3 -m compileall -q chai_lab tests`, and
+  `git diff --check` passed. Full model/GPU validation remains stage 6.
