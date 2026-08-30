@@ -56,21 +56,25 @@ synthetic two-chain test compares native and persisted-then-reconstructed Parque
 row for row. The internal sequence hash is still derived at runtime and is not added to
 JSON.
 
-Stage 3 generalizes the data API to `prepare_data_bundle()`. In addition to MSA files,
-it publishes template hits as `templates/all_chain_templates.m8`, normalizes every CIF
-referenced by the M8 table into `templates/cifs/<PDB>.cif.gz`, and copies a native
-restraint table to `constraints/<target>.restraints.csv`. All paths written to the
-prepared JSON are relative to that JSON. A declared template bundle uses M8 entity
-names or sequence hashes according to `templates.query_id_mode`; a ColabFold template
-search remaps server IDs `101, 102, ...` to the sequence hashes used by Chai at
-inference. Declared and server templates cannot be combined accidentally.
+Stage 3 generalizes the data API to `prepare_data_bundle()`. Template search still uses
+Chai's native ColabFold M8, RCSB coordinate loading, Kalign realignment,
+`get_template_data()` filtering, unresolved-residue handling, and four-template limit.
+The persistence boundary is after that native parsing. M8 and the download cache remain
+temporary; the prepared JSON instead stores an AF3-style template list on each protein:
+`mmcifPath`, `queryIndices`, and `templateIndices`. Each accepted single-chain structure
+is written as
+`msas/<target>__<first-entity-id>_template_<index>.cif.zst`. Missing/null templates mean
+"search if enabled" on input, while an empty list means explicitly no templates. Output
+is always a list, possibly empty.
 
-The restraint CSV is parsed by Chai's native parser during preparation and its chain
-names are checked against either JSON entity IDs or automatic A/B/C subchain names,
-according to `entity_ids_as_cif_chains`. `get_prepared_inference_resources()` converts a
-resolved prepared JSON into Chai's native M8 path, job-local CIF directory, lookup mode,
-and restraint path. It performs no model work or downloads. The older
-`prepare_msa_bundle()` remains as a compatibility wrapper with template-server search
+`get_prepared_template_context()` reads those structures and mappings, applies Chai's
+native protein extraction, tokenization, unresolved-residue filtering, and
+`TemplateContext` construction, without re-reading M8 or re-running Kalign. A feature
+round-trip test serializes a native `LoadedTemplate`, reconstructs it from only mmCIF
+plus residue mappings, and compares all five template feature tensors exactly. The
+restraint path is no longer wrapped: preparation neither parses nor copies the CSV. It
+only preserves a path that inference will pass to Chai's native restraint parser. The
+older `prepare_msa_bundle()` remains as a compatibility wrapper with template search
 disabled.
 
 Planned work is intentionally gated and will be implemented one stage at a time:
@@ -112,10 +116,11 @@ the early stages.
 
 ## Stage 3 validation
 
-- 32 tests plus 7 parameterized subtests passed in an isolated Python 3.12 environment.
-- Coverage includes local plain/gzip/zstd template CIFs, canonical job-local CIF output,
-  server M8 ID remapping, entity-name query validation, download fallback injection,
-  declared/server conflict rejection, native restraint parsing, both restraint chain-ID
-  conventions, and resolved inference-resource mapping.
+- 35 tests plus 2 parameterized subtests passed in an isolated Python 3.12 environment
+  using Chai's supported pandas 2.x line, including the native online ColabFold tests.
+- Coverage includes ephemeral M8 handling, first-ID template naming, AF3-style inline
+  and path templates, explicit empty templates, zstd structure output, native constraint
+  passthrough, and exact equality of template residue-type, pseudo-beta mask, backbone
+  mask, distance, and unit-vector tensors after structure/mapping round-trip.
 - Focused Ruff checks and formatting, `python3 -m compileall -q chai_lab tests`, and
-  `git diff --check` passed. Full model/GPU validation remains stage 6.
+  `git diff --check` passed. Full end-to-end model/GPU validation remains stage 6.

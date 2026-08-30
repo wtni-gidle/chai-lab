@@ -10,6 +10,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,6 @@ _TOP_LEVEL_FIELDS = {
     "sequences",
     "use_esm_embeddings",
     "entity_ids_as_cif_chains",
-    "templates",
     "constraint_path",
 }
 _ENTITY_TYPES = {"protein", "rna", "dna", "ligand", "glycan"}
@@ -42,6 +42,7 @@ _ENTITY_OPTIONAL_FIELDS = {
         "unpairedMsa",
         "unpairedMsaPath",
         "unpairedMsaFallbackSource",
+        "templates",
     },
     "rna": set(),
     "dna": set(),
@@ -62,8 +63,8 @@ _UNPAIRED_FALLBACK_SOURCES = {
     "uniprot",
     "uniref90",
 }
-_TEMPLATE_FIELDS = {"hits_path", "cif_directory", "query_id_mode"}
-_QUERY_ID_MODES = {"entity_name", "sequence_hash"}
+_TEMPLATE_REQUIRED_FIELDS = {"queryIndices", "templateIndices"}
+_TEMPLATE_OPTIONAL_FIELDS = {"mmcif", "mmcifPath"}
 
 
 class PreparedInputError(ValueError):
@@ -149,11 +150,92 @@ def _optional_msa_content(value: Any, location: str) -> str | None:
     return value
 
 
+def _expect_indices(value: Any, location: str) -> tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise PreparedInputError(f"{location} must be a non-empty list")
+    indices = tuple(value)
+    if any(type(index) is not int or index < 0 for index in indices):
+        raise PreparedInputError(f"{location} must contain non-negative integers")
+    if any(right <= left for left, right in pairwise(indices)):
+        raise PreparedInputError(f"{location} must be strictly increasing")
+    return indices
+
+
 def _resolve_path(path: Path, manifest_path: Path) -> Path:
     path = path.expanduser()
     if path.is_absolute():
         return path.resolve()
     return (manifest_path.expanduser().resolve().parent / path).resolve()
+
+
+@dataclass(frozen=True)
+class PreparedTemplate:
+    """One AF3-style template structure and its Chai-derived residue mapping."""
+
+    mmcif: str | None
+    mmcif_path: Path | None
+    query_indices: tuple[int, ...]
+    template_indices: tuple[int, ...]
+
+    @classmethod
+    def from_dict(cls, value: Any, location: str) -> "PreparedTemplate":
+        data = _expect_mapping(value, location)
+        _expect_fields(
+            data,
+            _TEMPLATE_REQUIRED_FIELDS,
+            _TEMPLATE_OPTIONAL_FIELDS,
+            location,
+        )
+        mmcif = data.get("mmcif")
+        mmcif_path = data.get("mmcifPath")
+        if mmcif is not None:
+            mmcif = _expect_nonempty_string(mmcif, f"{location}.mmcif")
+        if mmcif_path is not None:
+            mmcif_path = _expect_path(mmcif_path, f"{location}.mmcifPath")
+        if (mmcif is None) == (mmcif_path is None):
+            raise PreparedInputError(
+                f"{location} must set exactly one of mmcif/mmcifPath"
+            )
+
+        query_indices = _expect_indices(
+            data["queryIndices"], f"{location}.queryIndices"
+        )
+        template_indices = _expect_indices(
+            data["templateIndices"], f"{location}.templateIndices"
+        )
+        if len(query_indices) != len(template_indices):
+            raise PreparedInputError(
+                f"{location}.queryIndices and templateIndices must have equal length"
+            )
+        return cls(
+            mmcif=mmcif,
+            mmcif_path=mmcif_path,
+            query_indices=query_indices,
+            template_indices=template_indices,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "queryIndices": list(self.query_indices),
+            "templateIndices": list(self.template_indices),
+        }
+        if self.mmcif_path is None:
+            data["mmcif"] = self.mmcif
+        else:
+            data["mmcifPath"] = os.fspath(self.mmcif_path)
+        return data
+
+    def resolved(self, manifest_path: Path) -> "PreparedTemplate":
+        return PreparedTemplate(
+            mmcif=self.mmcif,
+            mmcif_path=(
+                None
+                if self.mmcif_path is None
+                else _resolve_path(self.mmcif_path, manifest_path)
+            ),
+            query_indices=self.query_indices,
+            template_indices=self.template_indices,
+        )
 
 
 @dataclass(frozen=True)
@@ -168,6 +250,7 @@ class PreparedEntity:
     unpaired_msa: str | None = None
     unpaired_msa_path: Path | None = None
     unpaired_msa_fallback_source: str = "auto"
+    templates: tuple[PreparedTemplate, ...] | None = None
 
     @classmethod
     def from_dict(cls, value: Any, index: int) -> "PreparedEntity":
@@ -210,6 +293,7 @@ class PreparedEntity:
         unpaired_msa = None
         unpaired_msa_path = None
         fallback_source = "auto"
+        templates = None
         if kind == "protein":
             paired_msa = _optional_msa_content(
                 data.get("pairedMsa"), f"{entity_location}.pairedMsa"
@@ -240,6 +324,19 @@ class PreparedEntity:
                     f"{entity_location}.unpairedMsaFallbackSource must be "
                     "'auto' or a supported Chai MSA source"
                 )
+            raw_templates = data.get("templates")
+            if raw_templates is not None:
+                if not isinstance(raw_templates, list):
+                    raise PreparedInputError(
+                        f"{entity_location}.templates must be a list or null"
+                    )
+                templates = tuple(
+                    PreparedTemplate.from_dict(
+                        template,
+                        f"{entity_location}.templates[{template_index}]",
+                    )
+                    for template_index, template in enumerate(raw_templates)
+                )
 
         return cls(
             kind=kind,
@@ -250,6 +347,7 @@ class PreparedEntity:
             unpaired_msa=unpaired_msa,
             unpaired_msa_path=unpaired_msa_path,
             unpaired_msa_fallback_source=fallback_source,
+            templates=templates,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -268,6 +366,11 @@ class PreparedEntity:
             else:
                 entity["unpairedMsaPath"] = os.fspath(self.unpaired_msa_path)
             entity["unpairedMsaFallbackSource"] = self.unpaired_msa_fallback_source
+            entity["templates"] = (
+                None
+                if self.templates is None
+                else [template.to_dict() for template in self.templates]
+            )
         return {self.kind: entity}
 
     def resolved(self, manifest_path: Path) -> "PreparedEntity":
@@ -288,6 +391,13 @@ class PreparedEntity:
                 else _resolve_path(self.unpaired_msa_path, manifest_path)
             ),
             unpaired_msa_fallback_source=self.unpaired_msa_fallback_source,
+            templates=(
+                None
+                if self.templates is None
+                else tuple(
+                    template.resolved(manifest_path) for template in self.templates
+                )
+            ),
         )
 
     def to_chai_inputs(self) -> list[Input]:
@@ -304,49 +414,6 @@ class PreparedEntity:
 
 
 @dataclass(frozen=True)
-class PreparedTemplates:
-    """Template hit table, local CIF cache, and M8 query-ID convention."""
-
-    hits_path: Path
-    cif_directory: Path
-    query_id_mode: str
-
-    @classmethod
-    def from_dict(cls, value: Any) -> "PreparedTemplates":
-        location = "templates"
-        data = _expect_mapping(value, location)
-        _expect_exact_fields(data, _TEMPLATE_FIELDS, location)
-        query_id_mode = _expect_nonempty_string(
-            data["query_id_mode"], "templates.query_id_mode"
-        )
-        if query_id_mode not in _QUERY_ID_MODES:
-            raise PreparedInputError(
-                "templates.query_id_mode must be 'entity_name' or 'sequence_hash'"
-            )
-        return cls(
-            hits_path=_expect_path(data["hits_path"], "templates.hits_path"),
-            cif_directory=_expect_path(
-                data["cif_directory"], "templates.cif_directory"
-            ),
-            query_id_mode=query_id_mode,
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "hits_path": os.fspath(self.hits_path),
-            "cif_directory": os.fspath(self.cif_directory),
-            "query_id_mode": self.query_id_mode,
-        }
-
-    def resolved(self, manifest_path: Path) -> "PreparedTemplates":
-        return PreparedTemplates(
-            hits_path=_resolve_path(self.hits_path, manifest_path),
-            cif_directory=_resolve_path(self.cif_directory, manifest_path),
-            query_id_mode=self.query_id_mode,
-        )
-
-
-@dataclass(frozen=True)
 class PreparedInput:
     """Versioned, self-contained manifest for one Chai-1 prediction target."""
 
@@ -355,7 +422,6 @@ class PreparedInput:
     sequences: tuple[PreparedEntity, ...]
     use_esm_embeddings: bool
     entity_ids_as_cif_chains: bool
-    templates: PreparedTemplates | None
     constraint_path: Path | None
 
     @classmethod
@@ -397,13 +463,6 @@ class PreparedInput:
                     )
                 seen_proteins[normalized_sequence] = index
 
-        raw_templates = data["templates"]
-        templates = (
-            None
-            if raw_templates is None
-            else PreparedTemplates.from_dict(raw_templates)
-        )
-
         return cls(
             version=version,
             name=validate_target_name(data["name"]),
@@ -415,7 +474,6 @@ class PreparedInput:
                 data["entity_ids_as_cif_chains"],
                 "entity_ids_as_cif_chains",
             ),
-            templates=templates,
             constraint_path=_optional_path(data["constraint_path"], "constraint_path"),
         )
 
@@ -426,7 +484,6 @@ class PreparedInput:
             "sequences": [entity.to_dict() for entity in self.sequences],
             "use_esm_embeddings": self.use_esm_embeddings,
             "entity_ids_as_cif_chains": self.entity_ids_as_cif_chains,
-            "templates": None if self.templates is None else self.templates.to_dict(),
             "constraint_path": (
                 None
                 if self.constraint_path is None
@@ -445,11 +502,6 @@ class PreparedInput:
             ),
             use_esm_embeddings=self.use_esm_embeddings,
             entity_ids_as_cif_chains=self.entity_ids_as_cif_chains,
-            templates=(
-                None
-                if self.templates is None
-                else self.templates.resolved(manifest_path)
-            ),
             constraint_path=(
                 None
                 if self.constraint_path is None
@@ -471,11 +523,14 @@ class PreparedInput:
                     entity.unpaired_msa_path,
                     f"sequences[{index}].protein.unpairedMsaPath",
                 )
-        if resolved.templates is not None:
-            _require_file(resolved.templates.hits_path, "templates.hits_path")
-            _require_directory(
-                resolved.templates.cif_directory, "templates.cif_directory"
-            )
+            if entity.templates is not None:
+                for template_index, template in enumerate(entity.templates):
+                    if template.mmcif_path is not None:
+                        _require_file(
+                            template.mmcif_path,
+                            f"sequences[{index}].protein.templates["
+                            f"{template_index}].mmcifPath",
+                        )
         if resolved.constraint_path is not None:
             _require_file(resolved.constraint_path, "constraint_path")
         return resolved
@@ -492,13 +547,6 @@ class PreparedInput:
 def _require_file(path: Path, location: str) -> None:
     if not path.is_file():
         raise PreparedInputError(f"{location} does not exist or is not a file: {path}")
-
-
-def _require_directory(path: Path, location: str) -> None:
-    if not path.is_dir():
-        raise PreparedInputError(
-            f"{location} does not exist or is not a directory: {path}"
-        )
 
 
 def load_prepared_input(path: str | Path) -> PreparedInput:

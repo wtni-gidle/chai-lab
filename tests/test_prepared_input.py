@@ -30,6 +30,7 @@ def _manifest_dict() -> dict:
                     "pairedMsaPath": "msas/seq__A_pairedmsa.a3m.zst",
                     "unpairedMsaPath": "msas/seq__A_unpairedmsa.a3m.zst",
                     "unpairedMsaFallbackSource": "auto",
+                    "templates": [],
                 }
             },
             {"rna": {"id": ["R"], "sequence": "AUGC"}},
@@ -39,7 +40,6 @@ def _manifest_dict() -> dict:
         ],
         "use_esm_embeddings": True,
         "entity_ids_as_cif_chains": False,
-        "templates": None,
         "constraint_path": "constraints/seq.restraints.csv",
     }
 
@@ -77,6 +77,7 @@ class PreparedInputTest(unittest.TestCase):
         del protein["pairedMsaPath"]
         del protein["unpairedMsaPath"]
         del protein["unpairedMsaFallbackSource"]
+        protein["templates"] = None
         manifest["constraint_path"] = None
 
         prepared = PreparedInput.from_dict(manifest)
@@ -99,6 +100,44 @@ class PreparedInputTest(unittest.TestCase):
 
         protein["unpairedMsaPath"] = "msa.a3m"
         with self.assertRaisesRegex(PreparedInputError, "only one of"):
+            PreparedInput.from_dict(manifest)
+
+    def test_af3_style_template_schema_and_mapping_validation(self):
+        manifest = _manifest_dict()
+        protein = manifest["sequences"][0]["protein"]
+        protein["templates"] = [
+            {
+                "mmcif": "data_template\n#\n",
+                "queryIndices": [0, 2, 3],
+                "templateIndices": [1, 2, 4],
+            }
+        ]
+        prepared = PreparedInput.from_dict(manifest)
+        template = prepared.sequences[0].templates[0]
+        self.assertEqual(template.query_indices, (0, 2, 3))
+        self.assertEqual(template.template_indices, (1, 2, 4))
+
+        protein["templates"][0]["mmcifPath"] = "template.cif"
+        with self.assertRaisesRegex(PreparedInputError, "exactly one"):
+            PreparedInput.from_dict(manifest)
+
+        protein["templates"][0].pop("mmcifPath")
+        protein["templates"][0]["templateIndices"] = [1, 2]
+        with self.assertRaisesRegex(PreparedInputError, "equal length"):
+            PreparedInput.from_dict(manifest)
+
+        protein["templates"][0]["templateIndices"] = [1, 1, 4]
+        with self.assertRaisesRegex(PreparedInputError, "strictly increasing"):
+            PreparedInput.from_dict(manifest)
+
+    def test_top_level_m8_template_block_is_rejected(self):
+        manifest = _manifest_dict()
+        manifest["templates"] = {
+            "hits_path": "hits.m8",
+            "cif_directory": "cifs",
+            "query_id_mode": "entity_name",
+        }
+        with self.assertRaisesRegex(PreparedInputError, "unknown fields: templates"):
             PreparedInput.from_dict(manifest)
 
     def test_json_entities_expand_to_native_chai_inputs(self):

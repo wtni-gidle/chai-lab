@@ -42,7 +42,6 @@ def _manifest(proteins: list[dict]) -> dict:
         "sequences": [{"protein": protein} for protein in proteins],
         "use_esm_embeddings": True,
         "entity_ids_as_cif_chains": False,
-        "templates": None,
         "constraint_path": None,
     }
 
