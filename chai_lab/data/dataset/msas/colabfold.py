@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import time
 import typing
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -16,10 +17,8 @@ import requests
 from tqdm import tqdm
 
 from chai_lab import __version__
-from chai_lab.data.parsing.fasta import Fasta, read_fasta
-from chai_lab.data.parsing.msas.aligned_pqt import expected_basename, hash_sequence
-from chai_lab.data.parsing.msas.data_source import MSADataSource
-from chai_lab.data.parsing.templates.m8 import parse_m8_file
+from chai_lab.data.parsing.msas.prepared_a3m import colabfold_a3ms_to_dataframe
+from chai_lab.data.parsing.msas.sequence_hash import expected_basename, hash_sequence
 
 logger = logging.getLogger(__name__)
 
@@ -287,10 +286,60 @@ def _run_mmseqs2(
     return a3m_lines, template_path
 
 
-def _is_padding_msa_row(sequence: str) -> bool:
-    """Check if the given MSA sequence is a a padding sequence."""
-    seq_chars = set(sequence)
-    return len(seq_chars) == 1 and seq_chars.pop() == "-"
+@dataclass(frozen=True)
+class ColabFoldA3Ms:
+    """Raw per-sequence results returned by the ColabFold server."""
+
+    paired: str
+    unpaired: str
+
+
+def generate_colabfold_a3ms(
+    protein_seqs: list[str],
+    work_dir: Path,
+    msa_server_url: str,
+    search_templates: bool = False,
+) -> tuple[list[ColabFoldA3Ms], Path | None]:
+    """Run the native server searches but leave results as paired/unpaired A3M."""
+    assert work_dir.is_dir(), "MSA work directory must be a dir"
+    assert not any(work_dir.iterdir()), "MSA work directory must be empty"
+    if not protein_seqs:
+        return [], None
+
+    mmseqs_paired_dir = work_dir / "mmseqs_paired"
+    mmseqs_paired_dir.mkdir()
+    mmseqs_dir = work_dir / "mmseqs"
+    mmseqs_dir.mkdir()
+
+    logger.info(f"Running MSA generation for {len(protein_seqs)} protein sequences")
+    user_agent = f"chai-lab/{__version__} feedback@chaidiscovery.com"
+    if len(protein_seqs) > 1:
+        paired_msas, _ = _run_mmseqs2(
+            protein_seqs,
+            mmseqs_paired_dir,
+            use_pairing=True,
+            use_templates=False,
+            host_url=msa_server_url,
+            user_agent=user_agent,
+        )
+    else:
+        paired_msas = [""] * len(protein_seqs)
+
+    unpaired_msas, template_hits_file = _run_mmseqs2(
+        protein_seqs,
+        mmseqs_dir,
+        use_pairing=False,
+        use_templates=search_templates,
+        host_url=msa_server_url,
+        user_agent=user_agent,
+    )
+    return (
+        [
+            ColabFoldA3Ms(paired=paired, unpaired=unpaired)
+            for paired, unpaired in zip(paired_msas, unpaired_msas, strict=True)
+        ],
+        None if template_hits_file is None else Path(template_hits_file),
+    )
 
 
 def generate_colabfold_msas(
@@ -321,50 +370,20 @@ def generate_colabfold_msas(
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         tmp_dir = Path(tmp_dir_path)
-
-        mmseqs_paired_dir = tmp_dir / "mmseqs_paired"
-        mmseqs_paired_dir.mkdir()
-
-        mmseqs_dir = tmp_dir / "mmseqs"
-        mmseqs_dir.mkdir()
-
         a3ms_dir = (tmp_dir if not write_a3m_to_msa_dir else msa_dir) / "a3ms"
         a3ms_dir.mkdir()
+        search_dir = tmp_dir / "search"
+        search_dir.mkdir()
 
-        # Generate MSAs for each protein chain
-        logger.info(f"Running MSA generation for {len(protein_seqs)} protein sequences")
-
-        # Identify ourselves to the ColabFold server
-        user_agent = f"chai-lab/{__version__} feedback@chaidiscovery.com"
-
-        # In paired mode, mmseqs2 returns paired a3ms where all a3ms have the same number of rows
-        # and each row is already paired to have the same species. As such, we insert pairing key
-        # as the i-th index of the sequence so long as it isn't a padding sequence (all -)
-        paired_msas: list[str]
-        if len(protein_seqs) > 1:
-            paired_msas, _ = _run_mmseqs2(
-                protein_seqs,
-                mmseqs_paired_dir,
-                use_pairing=True,
-                use_templates=False,  # No templates when running paired search
-                host_url=msa_server_url,
-                user_agent=user_agent,
-            )
-        else:
-            # If we only have a single protein chain, there are no paired MSAs by definition
-            paired_msas = [""] * len(protein_seqs)
-
-        # MSAs without pairing logic attached; may include sequences not contained in the paired MSA
-        # Needs a second call as the colabfold server returns either paired or unpaired, not both
-        per_chain_msas, template_hits_file = _run_mmseqs2(
+        searched, template_hits_file = generate_colabfold_a3ms(
             protein_seqs,
-            mmseqs_dir,
-            use_pairing=False,
-            use_templates=search_templates,
-            host_url=msa_server_url,
-            user_agent=user_agent,
+            search_dir,
+            msa_server_url,
+            search_templates,
         )
         if search_templates:
+            from chai_lab.data.parsing.templates.m8 import parse_m8_file
+
             assert template_hits_file is not None and os.path.isfile(template_hits_file)
             all_templates = parse_m8_file(Path(template_hits_file))
             # query IDs are 101, 102, ... from the server; remap IDs
@@ -382,72 +401,18 @@ def generate_colabfold_msas(
 
         # Process the MSAs into our internal format
         msa_paths: dict[str, Path] = {}  # Map each sequence to path of aligned pqt
-        for protein_seq, pair_msa, single_msa in zip(
-            protein_seqs, paired_msas, per_chain_msas, strict=True
-        ):
+        for protein_seq, result in zip(protein_seqs, searched, strict=True):
             # Write out an A3M file for both
             hkey = hash_sequence(protein_seq.upper())
             pair_a3m_path = a3ms_dir / f"{hkey}.pair.a3m"
-            pair_a3m_path.write_text(pair_msa)
+            pair_a3m_path.write_text(result.paired)
             single_a3m_path = a3ms_dir / f"{hkey}.single.a3m"
-            single_a3m_path.write_text(single_msa)
+            single_a3m_path.write_text(result.unpaired)
 
-            ## Convert the A3M file into aligned parquet files
-            # Set the pairing key as the ith-index in the sequences, skip over sequences that have
-            # been inserted as padding as our internal pairing logic will match on pairing key.
-            paired_fasta: list[tuple[str, str, str]] = [
-                (str(pairkey), record.header, record.sequence)
-                for pairkey, record in enumerate(read_fasta(pair_a3m_path))
-                if not _is_padding_msa_row(record.sequence)
-            ]
-            pairing_key, paired_headers, paired_msa_seqs = (
-                zip(*paired_fasta) if paired_fasta else ((), (), ())
-            )
-            unique_paired_msa_seqs = set(paired_msa_seqs)
-
-            # Non-paired MSA sequences that weren't already covered in the paired MSA
-            # If there were paired MSAs, then skip the header to avoid duplication
-            single_fasta: list[Fasta] = [
-                record
-                for i, record in enumerate(read_fasta(single_a3m_path))
-                if (
-                    (len(paired_headers) == 0 or i > 0)
-                    and not _is_padding_msa_row(record.sequence)
-                    and record.sequence not in unique_paired_msa_seqs
-                )
-            ]
-            single_headers = [record.header for record in single_fasta]
-            single_msa_seqs = [record.sequence for record in single_fasta]
-            # Create null pairing keys for each of the entries in the single MSA seq
-            single_null_pair_keys = [""] * len(single_msa_seqs)
-
-            # This shouldn't have much of an effect on the model, but we make
-            # a best effort to synthesize a source database anyway
-            # NOTE we already dropped the query row from the single MSAs so no need to slice
-            source_databases = ["query"] + [
-                (
-                    MSADataSource.UNIREF90.value
-                    if h.startswith("UniRef")
-                    else MSADataSource.BFD_UNICLUST.value
-                )
-                for h in (list(paired_headers) + single_headers)[1:]
-            ]
-
-            # Combine information across paired and single hits
-            all_sequences = list(paired_msa_seqs) + single_msa_seqs
-            all_pairing_keys = list(pairing_key) + single_null_pair_keys
-            assert (
-                len(all_sequences) == len(all_pairing_keys) == len(source_databases)
-            ), f"Mismatched lengths: {len(all_sequences)=} {len(all_pairing_keys)=} {len(source_databases)=}"
-
-            # Map the MSAs to our internal format
-            aligned_df = pd.DataFrame(
-                data=dict(
-                    sequence=all_sequences,
-                    source_database=source_databases,
-                    pairing_key=all_pairing_keys,
-                    comment="",
-                ),
+            aligned_df = colabfold_a3ms_to_dataframe(
+                query_sequence=protein_seq,
+                paired_a3m=result.paired,
+                unpaired_a3m=result.unpaired,
             )
             msa_path = msa_dir / expected_basename(protein_seq)
             if not msa_path.exists():

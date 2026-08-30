@@ -26,6 +26,10 @@ from chai_lab.data.parsing.msas.data_source import (
     msa_dataset_source_to_priority,
     msa_dataset_source_to_quota,
 )
+from chai_lab.data.parsing.msas.sequence_hash import (  # noqa: F401
+    expected_basename,
+    hash_sequence,
+)
 from chai_lab.data.parsing.msas.species import get_tax_names
 from chai_lab.utils.typing import typecheck
 
@@ -43,21 +47,10 @@ class AlignedParquetModel(pa.DataFrameModel):
     comment: Series[str]
 
 
-def hash_sequence(seq: str) -> str:
-    hash_object = hashlib.sha256(seq.encode())
-    return hash_object.hexdigest()
-
-
 @lru_cache(maxsize=1_000_000)
 def stable_hash_for_pairkey(str) -> int:
     # very basic, fast hash, converts to int
     return int(hashlib.sha256(str.encode("utf-8")).hexdigest()[:7], 16)
-
-
-def expected_basename(query_sequence: str) -> str:
-    """Get the expected filename based on the uppercased query sequence."""
-    seqhash = hash_sequence(query_sequence.upper())
-    return f"{seqhash}.aligned.pqt"
 
 
 def parse_aligned_pqt_to_msa_context(

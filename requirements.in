@@ -8,6 +8,7 @@ matplotlib
 # misc
 tqdm~=4.66
 typing-extensions
+zstandard>=0.22; python_version < "3.14"
 
 # data import/export, application-specific
 gemmi~=0.7.5       # pdb/mmcif parsing
