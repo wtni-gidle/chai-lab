@@ -16,7 +16,8 @@ side-effect-free prepared-input foundation. Stage 2 added the MSA handoff APIs.
 Stage 3 added template and restraint handoff. Stage 4 connects the prepared inputs to
 the native feature/model boundary, plural seeds, and the wrapper prediction writer.
 Stage 5 adds lightweight per-seed skip, validates non-overlapping multi-process writes,
-provides `run_chai1.sh`, and removes the old `num_trunk_samples` execution axis.
+provides `run_chai1.sh`, and removes the old `num_trunk_samples` execution axis. Stage 6
+validates the complete contract on an NVIDIA A100 with real model checkpoints.
 
 `chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
 `_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
@@ -124,7 +125,7 @@ Planned work is intentionally gated and will be implemented one stage at a time:
 4. multi-seed CLI and AF3-style result writer (implemented in stage 4);
 5. lightweight skip, concurrency validation, `run_chai1.sh`, and removal of
    `num_trunk_samples` (implemented in stage 5);
-6. native/combined/split and GPU validation.
+6. native/combined/split and GPU validation (completed in stage 6).
 
 The wrapper contract uses plural `--seeds`, with one trunk execution per seed.
 `num_trunk_samples` is removed from this branch's Python API rather than retained as a
@@ -173,8 +174,7 @@ second diversity axis; multiple independent trunk runs are represented by seeds.
   separate NPZ keys, MSA plot publication, and rejection of inconsistent candidate
   arrays.
 - `chai-lab fold --help`, focused Ruff checks/formatting,
-  `python3 -m compileall -q chai_lab tests`, and `git diff --check` passed. Actual model
-  checkpoint/GPU and native/combined/split numerical validation remain stage 6.
+  `python3 -m compileall -q chai_lab tests`, and `git diff --check` passed.
 
 ## Stage 5 validation
 
@@ -185,5 +185,37 @@ second diversity axis; multiple independent trunk runs are represented by seeds.
   forwarding, and six independent spawned processes publishing non-overlapping seeds
   into one prediction tree.
 - Focused Ruff checks, `bash -n run_chai1.sh`, `python3 -m compileall -q chai_lab tests`,
-  and `git diff --check` passed. Actual checkpoint/GPU and native/combined/split
-  numerical validation remain stage 6.
+  and `git diff --check` passed.
+
+## Stage 6 validation
+
+- Deployment: Rocky Linux 10.2, Python 3.12.14, PyTorch 2.7.1+cu118, Kalign 3.6.0,
+  and an NVIDIA A100-SXM4-40GB. The shared environment, repository, and 6.5 GiB official
+  model assets occupy 13 GiB under `/media/share/db-af3/apps/chai1`; activation is via
+  `/media/share/db-af3/apps/chai1/activation.sh`.
+- Native FASTA, combined prepared workflow, and split data/inference runs completed on
+  GPU with the same seed and sampling settings. After model-size padding, 51 of 52
+  feature-context dictionary fields are exactly equal; the sole difference is `pdb_id`
+  metadata (`"test"` in the upstream FASTA builder versus the prepared target name),
+  which is not consumed by a feature generator. Combined and split `_data.json` files
+  are byte-identical.
+- Separate A100 processes are not bitwise deterministic even at a fixed seed. In the
+  small 10-step diagnostic, aligned atom RMSD was 0.21 Å for native versus combined and
+  0.55 Å for combined versus split; aggregate-score differences were 0.00131 and
+  0.00038. This is treated as expected numerical variation, not a data-pipeline
+  difference.
+- A homomer test completed inference with ESM2, replaced unpaired A3M.zst, paired MSA,
+  a persisted 1CRN template, and a native contact restraint. Replacing the unpaired MSA
+  changed reconstructed Parquet depth from three to four rows and retained the declared
+  `uniref90` source.
+- A real ColabFold data-only run found 461 MSA rows and four templates. Native
+  M8/RCSB/Kalign parsing produced four mapping+CIF.zst artifacts, no M8 was persisted,
+  and inference from the resulting `_data.json` completed successfully. Kalign is an
+  external runtime requirement and is not installed by the Python package itself.
+- Default production settings (three recycles, 200 diffusion steps, five samples)
+  produced five complete model/summary/PAE/PDE/pLDDT sets. One-process multi-seed,
+  complete and partial skip, and two concurrent GPU processes writing non-overlapping
+  seeds all passed; concurrent peak memory for the small test was 10,812 MiB and no
+  temporary result files remained.
+- The full offline regression suite also passed in the deployed Linux environment:
+  54 tests plus 8 subtests, with only upstream deprecation warnings.
