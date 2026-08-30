@@ -39,6 +39,64 @@ class PublishedSample:
     plddt_path: Path
 
 
+def expected_seed_samples(
+    predictions_dir: str | Path,
+    *,
+    seed: int,
+    sample_count: int,
+) -> tuple[PublishedSample, ...]:
+    """Return the exact wrapper paths expected for one seed."""
+    if sample_count <= 0:
+        raise PreparedOutputError("sample_count must be positive")
+    predictions_dir = Path(predictions_dir).expanduser().resolve()
+    return tuple(
+        PublishedSample(
+            seed=seed,
+            sample=sample,
+            model_path=(
+                predictions_dir / "models" / f"seed-{seed}_sample-{sample}_model.cif"
+            ),
+            summary_path=(
+                predictions_dir
+                / "summary_confidences"
+                / f"seed-{seed}_sample-{sample}_summary_confidences.json"
+            ),
+            pae_path=(
+                predictions_dir / "full_data" / f"pae_seed-{seed}_sample-{sample}.npz"
+            ),
+            pde_path=(
+                predictions_dir / "full_data" / f"pde_seed-{seed}_sample-{sample}.npz"
+            ),
+            plddt_path=(
+                predictions_dir / "full_data" / f"plddt_seed-{seed}_sample-{sample}.npz"
+            ),
+        )
+        for sample in range(sample_count)
+    )
+
+
+def seed_outputs_complete(
+    predictions_dir: str | Path,
+    *,
+    seed: int,
+    sample_count: int,
+) -> bool:
+    """Lightly check that every expected file for a seed exists and is non-empty."""
+    return all(
+        path.is_file() and path.stat().st_size > 0
+        for sample in expected_seed_samples(
+            predictions_dir, seed=seed, sample_count=sample_count
+        )
+        for path in (
+            sample.model_path,
+            sample.summary_path,
+            sample.pae_path,
+            sample.pde_path,
+            sample.plddt_path,
+        )
+    )
+
+
 def _temporary_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
 
@@ -106,15 +164,12 @@ def publish_structure_candidates(
     ):
         raise PreparedOutputError("Native candidate arrays have inconsistent sizes")
 
-    models_dir = predictions_dir / "models"
-    summaries_dir = predictions_dir / "summary_confidences"
-    full_data_dir = predictions_dir / "full_data"
+    expected = expected_seed_samples(
+        predictions_dir, seed=seed, sample_count=sample_count
+    )
     published: list[PublishedSample] = []
-    for sample in range(sample_count):
-        stem = f"seed-{seed}_sample-{sample}"
-        model_path = _atomic_copy(
-            candidates.cif_paths[sample], models_dir / f"{stem}_model.cif"
-        )
+    for sample, paths in enumerate(expected):
+        model_path = _atomic_copy(candidates.cif_paths[sample], paths.model_path)
 
         native_scores = get_scores(candidates.ranking_data[sample])
         summary = {
@@ -122,18 +177,10 @@ def publish_structure_candidates(
             "sample": sample,
             **{key: _json_score(value) for key, value in native_scores.items()},
         }
-        summary_path = _atomic_json(
-            summaries_dir / f"{stem}_summary_confidences.json", summary
-        )
-        pae_path = _atomic_npz(
-            full_data_dir / f"pae_{stem}.npz", "pae", candidates.pae[sample]
-        )
-        pde_path = _atomic_npz(
-            full_data_dir / f"pde_{stem}.npz", "pde", candidates.pde[sample]
-        )
-        plddt_path = _atomic_npz(
-            full_data_dir / f"plddt_{stem}.npz", "plddt", candidates.plddt[sample]
-        )
+        summary_path = _atomic_json(paths.summary_path, summary)
+        pae_path = _atomic_npz(paths.pae_path, "pae", candidates.pae[sample])
+        pde_path = _atomic_npz(paths.pde_path, "pde", candidates.pde[sample])
+        plddt_path = _atomic_npz(paths.plddt_path, "plddt", candidates.plddt[sample])
         published.append(
             PublishedSample(
                 seed=seed,

@@ -76,6 +76,9 @@ def fold(
     recycle_msa_subsample: int = typer.Option(0, "--recycle-msa-subsample"),
     device: str | None = typer.Option(None, "--device"),
     low_memory: str = typer.Option("true", "--low-memory"),
+    skip: str = typer.Option(
+        "false", "-S", "--skip", help="Skip seeds with every expected output file."
+    ),
 ) -> None:
     """Run the prepared-JSON data pipeline and/or Chai-1 inference."""
     try:
@@ -96,6 +99,7 @@ def fold(
             num_diffn_samples=diffusion_samples,
             device=device,
             low_memory=_boolean_option(low_memory, "--low-memory"),
+            skip=_boolean_option(skip, "--skip"),
         )
     except (ValueError, FileNotFoundError) as error:
         raise typer.BadParameter(str(error)) from error

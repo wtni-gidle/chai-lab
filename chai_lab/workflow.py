@@ -273,6 +273,7 @@ def run_prepared_workflow(
     num_diffn_samples: int = 5,
     device: str | None = None,
     low_memory: bool = True,
+    skip: bool = False,
 ) -> WorkflowResult:
     """Execute data preparation and/or inference for one prepared JSON target."""
     if num_diffn_samples <= 0:
@@ -310,13 +311,48 @@ def run_prepared_workflow(
 
     normalized_seeds = normalize_seeds(seeds)
     logger.info("Running Chai-1 seeds: %s", ", ".join(map(str, normalized_seeds)))
+    from chai_lab.data.io.prepared_outputs import (
+        expected_seed_samples,
+        publish_structure_candidates,
+        seed_outputs_complete,
+    )
+
+    pending_seeds = tuple(
+        seed
+        for seed in normalized_seeds
+        if not skip
+        or not seed_outputs_complete(
+            plan.predictions_dir,
+            seed=seed,
+            sample_count=num_diffn_samples,
+        )
+    )
+    skipped_seeds = tuple(
+        seed for seed in normalized_seeds if seed not in pending_seeds
+    )
+    if skipped_seeds:
+        logger.info("Skipping complete seeds: %s", ", ".join(map(str, skipped_seeds)))
+    expected_model_paths = tuple(
+        sample.model_path
+        for seed in normalized_seeds
+        for sample in expected_seed_samples(
+            plan.predictions_dir,
+            seed=seed,
+            sample_count=num_diffn_samples,
+        )
+    )
+    if not pending_seeds:
+        return WorkflowResult(
+            prepared_path=manifest_path,
+            seeds=normalized_seeds,
+            prediction_paths=expected_model_paths,
+        )
+
     prepared = load_prepared_input(manifest_path).validate_resources(manifest_path)
     torch_device = torch.device(device if device is not None else "cuda:0")
 
     from chai_lab.data.io.prepared_msas import build_private_msa_directory
-    from chai_lab.data.io.prepared_outputs import publish_structure_candidates
 
-    prediction_paths: list[Path] = []
     with tempfile.TemporaryDirectory(
         prefix=f"chai_{plan.name}_", dir=_temporary_parent()
     ) as temporary:
@@ -329,7 +365,7 @@ def run_prepared_workflow(
             msa_directory=private_msa_directory,
             esm_device=torch_device,
         )
-        for seed in normalized_seeds:
+        for seed in pending_seeds:
             logger.info("Running seed %d", seed)
             candidates = _run_folding(
                 feature_context,
@@ -350,10 +386,14 @@ def run_prepared_workflow(
                 predictions_dir=plan.predictions_dir,
                 seed=seed,
             )
-            prediction_paths.extend(sample.model_path for sample in published)
+            if len(published) != num_diffn_samples:
+                raise ValueError(
+                    f"Seed {seed} published {len(published)} samples; "
+                    f"expected {num_diffn_samples}"
+                )
 
     return WorkflowResult(
         prepared_path=manifest_path,
         seeds=normalized_seeds,
-        prediction_paths=tuple(prediction_paths),
+        prediction_paths=expected_model_paths,
     )

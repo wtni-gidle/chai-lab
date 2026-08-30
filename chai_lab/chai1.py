@@ -4,7 +4,6 @@
 
 
 import itertools
-import logging
 import math
 from collections import Counter
 from contextlib import contextmanager
@@ -513,7 +512,6 @@ def run_inference(
     num_trunk_recycles: int = 3,
     num_diffn_timesteps: int = 200,
     num_diffn_samples: int = 5,
-    num_trunk_samples: int = 1,
     seed: int | None = None,
     device: str | None = None,
     low_memory: bool = True,
@@ -526,7 +524,7 @@ def run_inference(
     - If fasta_names_as_cif_chains is True, fasta entity names are used for parsing
       and writing chains. Restraints must ALSO be named w.r.t. fasta names.
     """
-    assert num_trunk_samples > 0 and num_diffn_samples > 0
+    assert num_diffn_samples > 0
     if output_dir.exists():
         assert not any(
             output_dir.iterdir()
@@ -549,27 +547,18 @@ def run_inference(
         esm_device=torch_device,
     )
 
-    all_candidates: list[StructureCandidates] = []
-    for trunk_idx in range(num_trunk_samples):
-        logging.info(f"Trunk sample {trunk_idx + 1}/{num_trunk_samples}")
-        cand = run_folding_on_context(
-            feature_context,
-            output_dir=(
-                output_dir / f"trunk_{trunk_idx}"
-                if num_trunk_samples > 1
-                else output_dir
-            ),
-            num_trunk_recycles=num_trunk_recycles,
-            num_diffn_timesteps=num_diffn_timesteps,
-            num_diffn_samples=num_diffn_samples,
-            recycle_msa_subsample=recycle_msa_subsample,
-            seed=seed + trunk_idx if seed is not None else None,
-            device=torch_device,
-            low_memory=low_memory,
-            entity_names_as_chain_names_in_output_cif=fasta_names_as_cif_chains,
-        )
-        all_candidates.append(cand)
-    return StructureCandidates.concat(all_candidates)
+    return run_folding_on_context(
+        feature_context,
+        output_dir=output_dir,
+        num_trunk_recycles=num_trunk_recycles,
+        num_diffn_timesteps=num_diffn_timesteps,
+        num_diffn_samples=num_diffn_samples,
+        recycle_msa_subsample=recycle_msa_subsample,
+        seed=seed,
+        device=torch_device,
+        low_memory=low_memory,
+        entity_names_as_chain_names_in_output_cif=fasta_names_as_cif_chains,
+    )
 
 
 def _bin_centers(min_bin: float, max_bin: float, no_bins: int) -> Tensor:

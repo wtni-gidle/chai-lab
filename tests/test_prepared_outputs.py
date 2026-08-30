@@ -3,6 +3,7 @@
 # See the LICENSE file for details.
 
 import json
+import multiprocessing
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +15,44 @@ import torch
 
 from chai_lab.data.io.prepared_outputs import (
     PreparedOutputError,
+    expected_seed_samples,
     publish_structure_candidates,
+    seed_outputs_complete,
 )
+
+
+def _publish_seed_in_process(root_text: str, seed: int) -> None:
+    import chai_lab.data.io.prepared_outputs as outputs
+
+    root = Path(root_text)
+    native = root / f"native-{seed}"
+    native.mkdir()
+    cif = native / "pred.model_idx_0.cif"
+    cif.write_text(f"data_seed_{seed}\n", encoding="utf-8")
+    plot = native / "msa_depth.pdf"
+    plot.write_bytes(f"%PDF-{seed}".encode())
+    candidates = SimpleNamespace(
+        cif_paths=[cif],
+        ranking_data=[None],
+        msa_coverage_plot_path=plot,
+        pae=np.full((1, 2, 2), seed, dtype=np.float32),
+        pde=np.full((1, 2, 2), seed, dtype=np.float32),
+        plddt=np.full((1, 2), seed, dtype=np.float32),
+    )
+
+    def fake_scores(_):
+        return {
+            "aggregate_score": np.array([seed / 100]),
+            "ptm": np.array([0.5]),
+            "iptm": np.array([0.5]),
+        }
+
+    outputs.get_scores = fake_scores
+    outputs.publish_structure_candidates(
+        candidates,
+        predictions_dir=root / "predictions",
+        seed=seed,
+    )
 
 
 class PreparedOutputTest(unittest.TestCase):
@@ -78,6 +115,20 @@ class PreparedOutputTest(unittest.TestCase):
                 (root / "predictions" / "msa_depth.pdf").read_bytes(), b"%PDF-test"
             )
             self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
+            self.assertTrue(
+                seed_outputs_complete(root / "predictions", seed=42, sample_count=2)
+            )
+            published[1].pde_path.write_bytes(b"")
+            self.assertFalse(
+                seed_outputs_complete(root / "predictions", seed=42, sample_count=2)
+            )
+
+    def test_expected_paths_require_the_exact_sample_set(self):
+        paths = expected_seed_samples("predictions", seed=9, sample_count=2)
+        self.assertEqual(paths[0].model_path.name, "seed-9_sample-0_model.cif")
+        self.assertEqual(paths[1].pae_path.name, "pae_seed-9_sample-1.npz")
+        with self.assertRaisesRegex(PreparedOutputError, "positive"):
+            expected_seed_samples("predictions", seed=9, sample_count=0)
 
     def test_inconsistent_native_candidates_are_rejected(self):
         candidates = SimpleNamespace(
@@ -89,6 +140,34 @@ class PreparedOutputTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(PreparedOutputError, "inconsistent"):
             publish_structure_candidates(candidates, predictions_dir="unused", seed=1)
+
+    def test_independent_processes_publish_different_seeds_to_one_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            context = multiprocessing.get_context("spawn")
+            processes = [
+                context.Process(
+                    target=_publish_seed_in_process,
+                    args=(str(root), seed),
+                )
+                for seed in range(10, 16)
+            ]
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(timeout=30)
+                self.assertEqual(process.exitcode, 0)
+
+            for seed in range(10, 16):
+                self.assertTrue(
+                    seed_outputs_complete(
+                        root / "predictions", seed=seed, sample_count=1
+                    )
+                )
+            self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
+            self.assertGreater(
+                (root / "predictions" / "msa_depth.pdf").stat().st_size, 0
+            )
 
 
 if __name__ == "__main__":

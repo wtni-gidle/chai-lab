@@ -15,6 +15,8 @@ Stage 0 established the fork, branch, and upstream baseline. Stage 1 added the
 side-effect-free prepared-input foundation. Stage 2 added the MSA handoff APIs.
 Stage 3 added template and restraint handoff. Stage 4 connects the prepared inputs to
 the native feature/model boundary, plural seeds, and the wrapper prediction writer.
+Stage 5 adds lightweight per-seed skip, validates non-overlapping multi-process writes,
+provides `run_chai1.sh`, and removes the old `num_trunk_samples` execution axis.
 
 `chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
 `_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
@@ -28,8 +30,9 @@ of being silently corrected.
 
 Prepared entities expand directly to the lightweight native `Input` objects also used
 by the FASTA reader. A protein entry with `id: [A, B]` therefore becomes two native
-chain inputs while keeping one sequence and one pair of MSA inputs. The public native
-FASTA-based `chai_lab.chai1.run_inference()` Python API remains behavior-compatible.
+chain inputs while keeping one sequence and one pair of MSA inputs. The FASTA-based
+`chai_lab.chai1.run_inference()` path remains available, but this branch intentionally
+removes its `num_trunk_samples` argument: one call now performs exactly one trunk run.
 
 `chai_lab.workflow.build_workflow_plan` remains the side-effect-free path planner.
 `run_prepared_workflow()` now executes data-only, inference-only, or combined mode.
@@ -83,8 +86,7 @@ Stage 4 changes `chai-lab fold` to the prepared-JSON workflow. `-D/--run-data-pi
 and `-P/--run-inference` accept explicit boolean values; `-r/--seeds` accepts one seed
 or a comma-separated ordered list. Omitted seeds are materialized as one printed uint32
 value. Each seed runs exactly one trunk and all of its diffusion samples; the wrapper
-does not expose `num_trunk_samples`. The original FASTA-based
-`chai_lab.chai1.run_inference()` Python function is unchanged.
+uses no `num_trunk_samples` axis.
 
 Native candidates are first written in a process-private temporary directory and then
 atomically published without confidence re-ranking to:
@@ -100,6 +102,19 @@ adds the seed/sample identity. PAE, PDE, and per-token pLDDT remain separate NPZ
 There are no rank names, rank CSV, best-model copy, trunk directory, or persistent
 native `pred.model_idx_*`/`scores.model_idx_*` files.
 
+Stage 5 adds `-S/--skip`. For each requested seed, it checks the exact sample range
+`0..diffusion_samples-1`; a seed is skipped only when its model, summary, PAE, PDE, and
+pLDDT files all exist and are nonempty. This is deliberately lightweight: there is no
+request hash, manifest, deep file parsing, or cross-process lock. Extra files do not
+invalidate a complete seed. Completed and pending seeds may be mixed in one call, and
+an all-complete request returns before feature construction or model loading.
+
+The AF3-Pro-style `run_chai1.sh` exposes the data/inference switches, one-or-many seeds,
+sampling settings, MSA/template-server switches, GPU selection, and skip. Six spawned
+OS processes publishing different seeds into the same target passed the concurrency
+regression. Same-seed concurrent jobs remain unsupported: they may duplicate work and
+atomically replace the same final names.
+
 Planned work is intentionally gated and will be implemented one stage at a time:
 
 1. prepared JSON schema and workflow foundation (implemented in stage 1);
@@ -107,13 +122,13 @@ Planned work is intentionally gated and will be implemented one stage at a time:
    in stage 2);
 3. template and restraint handoff (implemented in stage 3);
 4. multi-seed CLI and AF3-style result writer (implemented in stage 4);
-5. lightweight skip, concurrency hardening, and `run_chai1.sh`;
+5. lightweight skip, concurrency validation, `run_chai1.sh`, and removal of
+   `num_trunk_samples` (implemented in stage 5);
 6. native/combined/split and GPU validation.
 
 The wrapper contract uses plural `--seeds`, with one trunk execution per seed.
-The wrapper will not expose `num_trunk_samples`; multiple independent trunk runs are
-represented by multiple seeds. Chai-1's native Python API remains unchanged during
-the early stages.
+`num_trunk_samples` is removed from this branch's Python API rather than retained as a
+second diversity axis; multiple independent trunk runs are represented by seeds.
 
 ## Stage 0 baseline
 
@@ -160,3 +175,15 @@ the early stages.
 - `chai-lab fold --help`, focused Ruff checks/formatting,
   `python3 -m compileall -q chai_lab tests`, and `git diff --check` passed. Actual model
   checkpoint/GPU and native/combined/split numerical validation remain stage 6.
+
+## Stage 5 validation
+
+- 54 tests plus 8 parameterized subtests passed for the complete offline wrapper and
+  native-restraint regression set in the isolated Python 3.12 environment.
+- Coverage includes complete/partial per-seed skip, early return before model loading,
+  removal of `num_trunk_samples` from the Python signature, exact shell-wrapper option
+  forwarding, and six independent spawned processes publishing non-overlapping seeds
+  into one prediction tree.
+- Focused Ruff checks, `bash -n run_chai1.sh`, `python3 -m compileall -q chai_lab tests`,
+  and `git diff --check` passed. Actual checkpoint/GPU and native/combined/split
+  numerical validation remain stage 6.

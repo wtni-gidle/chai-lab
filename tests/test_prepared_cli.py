@@ -22,6 +22,7 @@ class PreparedCLITest(unittest.TestCase):
         self.assertIn("--run-inference", result.output)
         self.assertIn("--seeds", result.output)
         self.assertIn("--diffusion-samples", result.output)
+        self.assertIn("--skip", result.output)
         self.assertNotIn("num-trunk-samples", result.output)
 
     def test_cli_boolean_values_and_seed_string_reach_workflow(self):
@@ -53,6 +54,8 @@ class PreparedCLITest(unittest.TestCase):
                         "false",
                         "-r",
                         "4,5",
+                        "-S",
+                        "true",
                     ],
                 )
 
@@ -63,6 +66,7 @@ class PreparedCLITest(unittest.TestCase):
             self.assertTrue(kwargs["use_msa_server"])
             self.assertFalse(kwargs["use_templates_server"])
             self.assertEqual(kwargs["seeds"], "4,5")
+            self.assertTrue(kwargs["skip"])
 
     def test_real_data_only_cli_writes_prepared_json(self):
         with tempfile.TemporaryDirectory() as temporary:
