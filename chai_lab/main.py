@@ -5,11 +5,12 @@
 """Command line interface."""
 
 import logging
+from pathlib import Path
 
 import typer
 
-from chai_lab.chai1 import run_inference
 from chai_lab.data.parsing.msas.aligned_pqt import merge_a3m_in_directory
+from chai_lab.workflow import run_prepared_workflow
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,15 +34,91 @@ def citation():
     typer.echo(CITATION)
 
 
-def cli():
+def _boolean_option(value: str, option_name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise typer.BadParameter(f"{option_name} must be true or false")
+
+
+def fold(
+    input_path: Path = typer.Argument(  # noqa: B008
+        ..., exists=True, dir_okay=False
+    ),
+    output_dir: Path = typer.Argument(..., file_okay=False),  # noqa: B008
+    run_data_pipeline: str = typer.Option(
+        "true", "-D", "--run-data-pipeline", help="Prepare MSA/template resources."
+    ),
+    run_model_inference: str = typer.Option(
+        "true", "-P", "--run-inference", help="Run model inference."
+    ),
+    seeds: str | None = typer.Option(
+        None, "-r", "--seeds", help="One seed or comma-separated seeds."
+    ),
+    diffusion_samples: int = typer.Option(
+        5, "-n", "--diffusion-samples", help="Diffusion samples per seed."
+    ),
+    recycling_steps: int = typer.Option(
+        3, "-c", "--recycling-steps", help="Trunk recycling steps."
+    ),
+    sampling_steps: int = typer.Option(
+        200, "-p", "--sampling-steps", help="Diffusion sampling steps."
+    ),
+    use_msa_server: str = typer.Option(
+        "false", "-M", "--use-msa-server", help="Search missing protein MSAs."
+    ),
+    use_templates_server: str = typer.Option(
+        "false", "-T", "--use-templates-server", help="Search missing templates."
+    ),
+    msa_server_url: str = typer.Option("https://api.colabfold.com", "--msa-server-url"),
+    recycle_msa_subsample: int = typer.Option(0, "--recycle-msa-subsample"),
+    device: str | None = typer.Option(None, "--device"),
+    low_memory: str = typer.Option("true", "--low-memory"),
+) -> None:
+    """Run the prepared-JSON data pipeline and/or Chai-1 inference."""
+    try:
+        result = run_prepared_workflow(
+            input_path,
+            output_dir,
+            run_data_pipeline=_boolean_option(run_data_pipeline, "--run-data-pipeline"),
+            run_inference=_boolean_option(run_model_inference, "--run-inference"),
+            use_msa_server=_boolean_option(use_msa_server, "--use-msa-server"),
+            use_templates_server=_boolean_option(
+                use_templates_server, "--use-templates-server"
+            ),
+            msa_server_url=msa_server_url,
+            seeds=seeds,
+            recycle_msa_subsample=recycle_msa_subsample,
+            num_trunk_recycles=recycling_steps,
+            num_diffn_timesteps=sampling_steps,
+            num_diffn_samples=diffusion_samples,
+            device=device,
+            low_memory=_boolean_option(low_memory, "--low-memory"),
+        )
+    except (ValueError, FileNotFoundError) as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"Prepared input: {result.prepared_path}")
+    if result.seeds:
+        typer.echo(f"Seeds: {','.join(map(str, result.seeds))}")
+        typer.echo(f"Published models: {len(result.prediction_paths)}")
+
+
+def build_app() -> typer.Typer:
+    """Build the command tree for console use and CLI tests."""
     app = typer.Typer()
-    app.command("fold", help="Run Chai-1 to fold a complex.")(run_inference)
+    app.command("fold", help="Run prepared-JSON Chai-1 workflow.")(fold)
     app.command(
         "a3m-to-pqt",
         help="Convert all a3m files in a directory for a *single sequence* into a aligned parquet file",
     )(merge_a3m_in_directory)
     app.command("citation", help="Print citation information")(citation)
-    app()
+    return app
+
+
+def cli():
+    build_app()()
 
 
 if __name__ == "__main__":

@@ -13,8 +13,8 @@ The detailed Chinese design and operating notes are maintained in
 
 Stage 0 established the fork, branch, and upstream baseline. Stage 1 added the
 side-effect-free prepared-input foundation. Stage 2 added the MSA handoff APIs.
-Stage 3 adds template and restraint handoff; the native CLI and prediction writer are
-still unchanged.
+Stage 3 added template and restraint handoff. Stage 4 connects the prepared inputs to
+the native feature/model boundary, plural seeds, and the wrapper prediction writer.
 
 `chai_lab.data.io.prepared_input` defines a strict, versioned, self-contained
 `_data.json` schema, relative-path resolution, declared-resource checks, atomic JSON
@@ -29,12 +29,14 @@ of being silently corrected.
 Prepared entities expand directly to the lightweight native `Input` objects also used
 by the FASTA reader. A protein entry with `id: [A, B]` therefore becomes two native
 chain inputs while keeping one sequence and one pair of MSA inputs. The public native
-FASTA path remains available and behavior-compatible.
+FASTA-based `chai_lab.chai1.run_inference()` Python API remains behavior-compatible.
 
-`chai_lab.workflow.build_workflow_plan` validates data/inference stage combinations and
-calculates target, job, prepared-input, and prediction locations. In stage 1 it only
-returns a plan: it does not search data, run Chai-1, or write prediction artifacts. The
-existing `chai-lab fold` command still calls the native `run_inference` function.
+`chai_lab.workflow.build_workflow_plan` remains the side-effect-free path planner.
+`run_prepared_workflow()` now executes data-only, inference-only, or combined mode.
+Inference reconstructs private Parquet, builds one native `AllAtomFeatureContext`, and
+reuses that context while invoking the unchanged `run_folding_on_context()` once for
+each requested seed. Temporary MSA/native output directories prefer `SLURM_TMPDIR` and
+otherwise use the system temporary directory; no user work-directory option is added.
 
 Stage 2 provides `prepare_msa_bundle()` and `build_private_msa_directory()`. The first
 normalizes supplied or ColabFold-generated paired/unpaired A3Ms into canonical
@@ -77,17 +79,38 @@ only preserves a path that inference will pass to Chai's native restraint parser
 older `prepare_msa_bundle()` remains as a compatibility wrapper with template search
 disabled.
 
+Stage 4 changes `chai-lab fold` to the prepared-JSON workflow. `-D/--run-data-pipeline`
+and `-P/--run-inference` accept explicit boolean values; `-r/--seeds` accepts one seed
+or a comma-separated ordered list. Omitted seeds are materialized as one printed uint32
+value. Each seed runs exactly one trunk and all of its diffusion samples; the wrapper
+does not expose `num_trunk_samples`. The original FASTA-based
+`chai_lab.chai1.run_inference()` Python function is unchanged.
+
+Native candidates are first written in a process-private temporary directory and then
+atomically published without confidence re-ranking to:
+
+```text
+predictions/models/seed-<seed>_sample-<sample>_model.cif
+predictions/summary_confidences/seed-<seed>_sample-<sample>_summary_confidences.json
+predictions/full_data/{pae,pde,plddt}_seed-<seed>_sample-<sample>.npz
+```
+
+Summary JSON retains Chai's aggregate, pTM, ipTM, per-chain/pair, and clash scores and
+adds the seed/sample identity. PAE, PDE, and per-token pLDDT remain separate NPZ files.
+There are no rank names, rank CSV, best-model copy, trunk directory, or persistent
+native `pred.model_idx_*`/`scores.model_idx_*` files.
+
 Planned work is intentionally gated and will be implemented one stage at a time:
 
 1. prepared JSON schema and workflow foundation (implemented in stage 1);
 2. paired/unpaired A3M.zst persistence and private Parquet reconstruction (implemented
    in stage 2);
 3. template and restraint handoff (implemented in stage 3);
-4. multi-seed CLI and AF3-style result writer;
+4. multi-seed CLI and AF3-style result writer (implemented in stage 4);
 5. lightweight skip, concurrency hardening, and `run_chai1.sh`;
 6. native/combined/split and GPU validation.
 
-The wrapper contract will use plural `--seeds`, with one trunk execution per seed.
+The wrapper contract uses plural `--seeds`, with one trunk execution per seed.
 The wrapper will not expose `num_trunk_samples`; multiple independent trunk runs are
 represented by multiple seeds. Chai-1's native Python API remains unchanged during
 the early stages.
@@ -124,3 +147,16 @@ the early stages.
   mask, distance, and unit-vector tensors after structure/mapping round-trip.
 - Focused Ruff checks and formatting, `python3 -m compileall -q chai_lab tests`, and
   `git diff --check` passed. Full end-to-end model/GPU validation remains stage 6.
+
+## Stage 4 validation
+
+- 48 tests plus 8 parameterized subtests passed for the complete offline wrapper and
+  native-restraint regression set in the isolated Python 3.12 environment.
+- Coverage includes real CLI data-only execution, CLI option forwarding, seed parsing
+  and validation, one feature-context construction reused across multiple seeds,
+  native restraint parsing at inference, exact output names, summary serialization,
+  separate NPZ keys, MSA plot publication, and rejection of inconsistent candidate
+  arrays.
+- `chai-lab fold --help`, focused Ruff checks/formatting,
+  `python3 -m compileall -q chai_lab tests`, and `git diff --check` passed. Actual model
+  checkpoint/GPU and native/combined/split numerical validation remain stage 6.
