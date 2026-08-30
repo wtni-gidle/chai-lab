@@ -11,12 +11,24 @@ The detailed Chinese design and operating notes are maintained in
 
 ## Implementation status
 
-Stage 0 establishes the fork, branch, and upstream baseline only. There are no runtime
-or CLI behavior changes yet.
+Stage 0 established the fork, branch, and upstream baseline. Stage 1 adds the
+side-effect-free prepared-input foundation; there are still no native CLI or inference
+behavior changes.
+
+`chai_lab.data.io.prepared_input` defines a strict, versioned `_data.json` schema,
+relative-path resolution, declared-resource checks, atomic JSON writing, and the
+`<output>/<name>/<name>_data.json` path rule. The top-level `name` is the formal target
+identity, so renaming the JSON file does not rename the target. Unknown fields and
+unsafe target names are rejected instead of being silently corrected.
+
+`chai_lab.workflow.build_workflow_plan` validates data/inference stage combinations and
+calculates target, job, prepared-input, and prediction locations. In stage 1 it only
+returns a plan: it does not search data, run Chai-1, or write prediction artifacts. The
+existing `chai-lab fold` command still calls the native `run_inference` function.
 
 Planned work is intentionally gated and will be implemented one stage at a time:
 
-1. prepared JSON schema and workflow foundation;
+1. prepared JSON schema and workflow foundation (implemented in stage 1);
 2. paired/unpaired A3M.zst persistence and private Parquet reconstruction;
 3. template and restraint handoff;
 4. multi-seed CLI and AF3-style result writer;
