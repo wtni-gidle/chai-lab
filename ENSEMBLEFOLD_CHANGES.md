@@ -9,6 +9,32 @@ the wrapper.
 The detailed Chinese design and operating notes are maintained in
 `/Users/wtni/Projects/EnsembleFold/CHAI1_WRAPPER_NOTES.md`.
 
+## Current wrapper contract at a glance
+
+The implemented workflow is:
+
+```text
+self-contained JSON
+  -> <output>/<name>/<name>_data.json + editable A3M/template resources
+  -> process-private reconstruction of native Chai inputs
+  -> one native trunk run per requested seed
+  -> atomic seed/sample prediction files
+```
+
+Compared with upstream Chai-1, this branch replaces the FASTA-oriented `fold` CLI
+with a prepared-JSON workflow, adds a durable data/inference boundary, persists
+paired and unpaired MSA as `.a3m.zst`, and persists templates only after Chai's
+native M8/RCSB/Kalign parsing as mmCIF plus residue mappings. Inference reconstructs
+hash-named `.aligned.pqt` files in a private temporary directory and still uses the
+native MSA, template, ESM, restraint, feature, trunk, diffusion, and confidence code.
+
+The wrapper exposes one plural `--seeds` option, with one trunk execution and five
+diffusion samples per seed by default. The upstream `num_trunk_samples` execution
+axis is removed. Results are appendable by non-overlapping seed under
+`predictions/{models,summary_confidences,full_data}`, and lightweight `--skip`
+checks the five expected nonempty files for every seed/sample. Same-seed concurrent
+execution is deliberately not locked and remains unsupported.
+
 ## Implementation status
 
 Stage 0 established the fork, branch, and upstream baseline. Stage 1 added the
