@@ -3,9 +3,10 @@
 # See the LICENSE file for details.
 
 import logging
+from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterator
 
 import gemmi
 import pandas as pd
@@ -17,6 +18,24 @@ from chai_lab.data.parsing.templates.template_hit import TemplateHit
 from chai_lab.tools.kalign import kalign_query_to_reference
 
 logger = logging.getLogger(__name__)
+
+_REVISION_DATE_TAG = "_pdbx_audit_revision_history.revision_date"
+
+
+def get_mmcif_release_date(cif_path: Path) -> date | None:
+    """Return the earliest PDB revision date, or ``None`` when unavailable."""
+    block = gemmi.cif.read(str(cif_path)).sole_block()
+    parsed_dates: list[date] = []
+    for value in block.find_values(_REVISION_DATE_TAG):
+        if value in {"", ".", "?"}:
+            continue
+        try:
+            parsed_dates.append(date.fromisoformat(value))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid mmCIF release date %r in %s", value, cif_path
+            )
+    return min(parsed_dates) if parsed_dates else None
 
 
 def parse_m8_file(fname: Path) -> pd.DataFrame:
@@ -51,6 +70,7 @@ def parse_m8_to_template_hits(
     query_sequence: str,
     m8_path: Path,
     template_cif_folder: Path | None = None,
+    max_template_date: date | None = None,
 ) -> Iterator[TemplateHit]:
     assert m8_path.is_file()
 
@@ -85,6 +105,27 @@ def parse_m8_to_template_hits(
                     Path(tmpdir) if template_cif_folder is None else template_cif_folder
                 ),
             )
+            if max_template_date is not None:
+                release_date = get_mmcif_release_date(cif_file)
+                if release_date is None:
+                    logger.warning(
+                        "[%s] Skipping template %s_%s because its release date "
+                        "is unavailable",
+                        query_pdb_id,
+                        hit_identifier,
+                        hit_chain,
+                    )
+                    continue
+                if release_date > max_template_date:
+                    logger.info(
+                        "[%s] Skipping template %s_%s released %s after cutoff %s",
+                        query_pdb_id,
+                        hit_identifier,
+                        hit_chain,
+                        release_date.isoformat(),
+                        max_template_date.isoformat(),
+                    )
+                    continue
             structure = gemmi.read_structure(path=str(cif_file))
 
         chain: gemmi.Chain = structure[0][hit_chain]  # Indexes by auth chain
@@ -126,4 +167,3 @@ def parse_m8_to_template_hits(
                 f"[{query_pdb_id=}] Could not load template from {hit_identifier} {hit_chain}",
                 exc_info=True,
             )
-            pass

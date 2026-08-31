@@ -10,6 +10,7 @@ import secrets
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import torch
@@ -266,6 +267,7 @@ def run_prepared_workflow(
     use_msa_server: bool = False,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
+    max_template_date: str | date = "2099-01-01",
     seeds: str | int | Sequence[int] | None = None,
     recycle_msa_subsample: int = 0,
     num_trunk_recycles: int = 3,
@@ -299,6 +301,7 @@ def run_prepared_workflow(
             use_msa_server=use_msa_server,
             use_templates_server=use_templates_server,
             msa_server_url=msa_server_url,
+            max_template_date=max_template_date,
         )
         manifest_path = plan.prepared_path
 

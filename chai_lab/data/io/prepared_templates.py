@@ -6,6 +6,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 from chai_lab.data.io.compression import read_text_auto, write_zstd_text
@@ -20,7 +21,23 @@ class PreparedTemplateError(ValueError):
     """Raised when prepared template structures or mappings are invalid."""
 
 
-NativeTemplateParser = Callable[[str, str, Path, Path], Sequence[PreparedTemplate]]
+DEFAULT_MAX_TEMPLATE_DATE = date(2099, 1, 1)
+
+NativeTemplateParser = Callable[
+    [str, str, Path, Path, date], Sequence[PreparedTemplate]
+]
+
+
+def parse_max_template_date(value: str | date) -> date:
+    """Normalize an ISO template cutoff while keeping it outside prepared JSON."""
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise PreparedTemplateError(
+            "max_template_date must use YYYY-MM-DD format"
+        ) from error
 
 
 def _single_chain_mmcif(cif_path: Path, chain_id: str) -> str:
@@ -89,6 +106,7 @@ def parse_native_template_hits(
     query_sequence: str,
     m8_path: Path,
     cif_cache_directory: Path,
+    max_template_date: date = DEFAULT_MAX_TEMPLATE_DATE,
 ) -> tuple[PreparedTemplate, ...]:
     """Run Chai's native M8/Kalign/structure filtering, then retain final mappings."""
     import torch
@@ -106,6 +124,7 @@ def parse_native_template_hits(
         query_sequence=query_sequence,
         m8_path=m8_path,
         template_cif_folder=cif_cache_directory,
+        max_template_date=max_template_date,
     )
     loaded = get_template_data(
         template_hits=hits,

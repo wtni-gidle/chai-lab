@@ -22,6 +22,7 @@ class PreparedCLITest(unittest.TestCase):
         self.assertIn("--run-inference", result.output)
         self.assertIn("--seeds", result.output)
         self.assertIn("--diffusion-samples", result.output)
+        self.assertIn("--max-template-date", result.output)
         self.assertIn("--skip", result.output)
         self.assertNotIn("num-trunk-samples", result.output)
 
@@ -52,6 +53,8 @@ class PreparedCLITest(unittest.TestCase):
                         "true",
                         "-T",
                         "false",
+                        "--max-template-date",
+                        "2021-09-30",
                         "-r",
                         "4,5",
                         "-S",
@@ -65,6 +68,7 @@ class PreparedCLITest(unittest.TestCase):
             self.assertFalse(kwargs["run_inference"])
             self.assertTrue(kwargs["use_msa_server"])
             self.assertFalse(kwargs["use_templates_server"])
+            self.assertEqual(kwargs["max_template_date"], "2021-09-30")
             self.assertEqual(kwargs["seeds"], "4,5")
             self.assertTrue(kwargs["skip"])
 

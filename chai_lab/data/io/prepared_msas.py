@@ -8,6 +8,7 @@ import os
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Protocol
 
@@ -22,8 +23,10 @@ from chai_lab.data.io.prepared_input import (
     write_prepared_input,
 )
 from chai_lab.data.io.prepared_templates import (
+    DEFAULT_MAX_TEMPLATE_DATE,
     NativeTemplateParser,
     materialize_template_structures,
+    parse_max_template_date,
     parse_native_template_hits,
 )
 from chai_lab.data.parsing.msas.prepared_a3m import (
@@ -69,6 +72,7 @@ def prepare_data_bundle(
     use_msa_server: bool,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
+    max_template_date: str | date = DEFAULT_MAX_TEMPLATE_DATE,
     searcher: MSASearcher | None = None,
     template_parser: NativeTemplateParser | None = None,
 ) -> PreparedInput:
@@ -81,6 +85,7 @@ def prepare_data_bundle(
     """
     source_manifest = Path(input_path).expanduser().resolve()
     output_manifest = Path(output_manifest_path).expanduser().resolve()
+    template_cutoff = parse_max_template_date(max_template_date)
     prepared = load_prepared_input(source_manifest)
     resolved = prepared.validate_resources(source_manifest)
 
@@ -152,6 +157,7 @@ def prepare_data_bundle(
                             query,
                             template_hits_path,
                             Path(temporary) / "template_cifs",
+                            template_cutoff,
                         )
                     )
                 cursor += len(entity.ids)

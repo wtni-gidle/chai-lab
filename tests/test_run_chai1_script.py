@@ -92,6 +92,8 @@ class RunChai1ScriptTest(unittest.TestCase):
                     "false",
                     "--use-templates-server",
                     "true",
+                    "--max-template-date",
+                    "2099-01-01",
                     "--skip",
                     "true",
                     "--seeds",

@@ -72,6 +72,11 @@ def fold(
     use_templates_server: str = typer.Option(
         "false", "-T", "--use-templates-server", help="Search missing templates."
     ),
+    max_template_date: str = typer.Option(
+        "2099-01-01",
+        "--max-template-date",
+        help="Latest allowed searched-template release date (YYYY-MM-DD).",
+    ),
     msa_server_url: str = typer.Option("https://api.colabfold.com", "--msa-server-url"),
     recycle_msa_subsample: int = typer.Option(0, "--recycle-msa-subsample"),
     device: str | None = typer.Option(None, "--device"),
@@ -92,6 +97,7 @@ def fold(
                 use_templates_server, "--use-templates-server"
             ),
             msa_server_url=msa_server_url,
+            max_template_date=max_template_date,
             seeds=seeds,
             recycle_msa_subsample=recycle_msa_subsample,
             num_trunk_recycles=recycling_steps,

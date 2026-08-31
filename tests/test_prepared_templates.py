@@ -6,8 +6,10 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from chai_lab.data.io.compression import read_text_auto, write_zstd_text
 from chai_lab.data.io.prepared_input import PreparedTemplate, load_prepared_input
@@ -16,7 +18,12 @@ from chai_lab.data.io.prepared_templates import (
     _as_loaded_template,
     _load_template_structure_context,
     _single_chain_mmcif,
+    parse_max_template_date,
     prepared_template_from_loaded,
+)
+from chai_lab.data.parsing.templates.m8 import (
+    get_mmcif_release_date,
+    parse_m8_to_template_hits,
 )
 
 PAIRED = ">101\nAAAA\n>paired\nAA-A\n"
@@ -74,11 +81,14 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                     SimpleNamespace(paired=PAIRED, unpaired=UNPAIRED),
                 ], m8_path
 
-            def fake_template_parser(query_id, query, m8_path, cif_cache):
+            def fake_template_parser(
+                query_id, query, m8_path, cif_cache, max_template_date
+            ):
                 observed["query_id"] = query_id
                 observed["query"] = query
                 observed["m8_exists_during_parse"] = m8_path.is_file()
                 observed["cif_cache"] = cif_cache
+                observed["max_template_date"] = max_template_date
                 return (
                     PreparedTemplate(
                         mmcif=MMCIF_A,
@@ -93,6 +103,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                 output,
                 use_msa_server=False,
                 use_templates_server=True,
+                max_template_date="2021-09-30",
                 searcher=fake_searcher,
                 template_parser=fake_template_parser,
             )
@@ -102,10 +113,12 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             self.assertEqual(observed["query_id"], "101")
             self.assertEqual(observed["query"], "AAAA")
             self.assertTrue(observed["m8_exists_during_parse"])
+            self.assertEqual(observed["max_template_date"], date(2021, 9, 30))
 
             data = json.loads(output.read_text())
             protein = data["sequences"][0]["protein"]
             self.assertNotIn("templates", data)
+            self.assertNotIn("max_template_date", data)
             self.assertEqual(
                 protein["templates"],
                 [
@@ -208,7 +221,9 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                     SimpleNamespace(paired="", unpaired="") for _ in queries
                 ], m8_path
 
-            def fake_template_parser(query_id, query, m8_path, cif_cache):
+            def fake_template_parser(
+                query_id, query, m8_path, cif_cache, max_template_date
+            ):
                 observed_query_ids.append(query_id)
                 return ()
 
@@ -222,6 +237,136 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             )
 
             self.assertEqual(observed_query_ids, ["101", "102"])
+
+
+class TemplateDateCutoffTest(unittest.TestCase):
+    def test_release_date_is_the_earliest_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cif_path = Path(temporary) / "template.cif"
+            cif_path.write_text(
+                """data_template
+loop_
+_pdbx_audit_revision_history.ordinal
+_pdbx_audit_revision_history.revision_date
+1 2021-09-30
+2 2023-01-01
+#
+""",
+                encoding="utf-8",
+            )
+            self.assertEqual(get_mmcif_release_date(cif_path), date(2021, 9, 30))
+
+    def test_invalid_cutoff_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
+            parse_max_template_date("2021/09/30")
+
+    def test_newer_hit_is_skipped_before_kalign_and_next_hit_is_considered(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            m8 = root / "hits.m8"
+            rows = [
+                "101\t1new_A\t90\t4\t0\t0\t1\t4\t1\t4\t1e-10\t100\tnew",
+                "101\t1old_A\t90\t4\t0\t0\t1\t4\t1\t4\t1e-9\t90\told",
+            ]
+            m8.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            class FakePolymer:
+                @staticmethod
+                def make_one_letter_sequence():
+                    return "AAAA"
+
+            class FakeChain:
+                @staticmethod
+                def get_polymer():
+                    return FakePolymer()
+
+            class FakeModel:
+                @staticmethod
+                def __getitem__(chain_id):
+                    return FakeChain()
+
+            class FakeStructure:
+                @staticmethod
+                def __getitem__(model_index):
+                    return FakeModel()
+
+            release_dates = {
+                "1new.cif.gz": date(2021, 10, 1),
+                "1old.cif.gz": date(2021, 9, 30),
+            }
+
+            def fake_download(pdb_id, directory):
+                return root / f"{pdb_id.lower()}.cif.gz"
+
+            def fake_release_date(path):
+                return release_dates[path.name]
+
+            with (
+                patch(
+                    "chai_lab.data.parsing.templates.m8.download_cif_file",
+                    side_effect=fake_download,
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.get_mmcif_release_date",
+                    side_effect=fake_release_date,
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.gemmi.read_structure",
+                    return_value=FakeStructure(),
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.kalign_query_to_reference",
+                    return_value=None,
+                ) as kalign,
+            ):
+                self.assertEqual(
+                    list(
+                        parse_m8_to_template_hits(
+                            "101",
+                            "AAAA",
+                            m8,
+                            template_cif_folder=root / "cache",
+                            max_template_date=date(2021, 9, 30),
+                        )
+                    ),
+                    [],
+                )
+
+            self.assertEqual(kalign.call_count, 1)
+
+    def test_unknown_release_date_is_skipped_before_kalign(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            m8 = root / "hits.m8"
+            m8.write_text(
+                "101\t1unk_A\t90\t4\t0\t0\t1\t4\t1\t4\t1e-10\t100\tunknown\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "chai_lab.data.parsing.templates.m8.download_cif_file",
+                    return_value=root / "1unk.cif.gz",
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.get_mmcif_release_date",
+                    return_value=None,
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.kalign_query_to_reference"
+                ) as kalign,
+            ):
+                self.assertEqual(
+                    list(
+                        parse_m8_to_template_hits(
+                            "101",
+                            "AAAA",
+                            m8,
+                            max_template_date=date(2099, 1, 1),
+                        )
+                    ),
+                    [],
+                )
+            kalign.assert_not_called()
 
 
 class NativeConstraintPassthroughTest(unittest.TestCase):

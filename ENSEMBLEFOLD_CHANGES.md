@@ -28,6 +28,16 @@ native M8/RCSB/Kalign parsing as mmCIF plus residue mappings. Inference reconstr
 hash-named `.aligned.pqt` files in a private temporary directory and still uses the
 native MSA, template, ESM, restraint, feature, trunk, diffusion, and confidence code.
 
+Template-server preparation accepts `--max-template-date YYYY-MM-DD` and defaults to
+`2099-01-01`, preserving the practical upstream behavior of having no date cutoff.
+For each M8 candidate, the earliest
+`_pdbx_audit_revision_history.revision_date` is read from the downloaded mmCIF. Hits
+released after the inclusive cutoff, or with no usable release date, are skipped
+before Kalign and before Chai's four-loaded-template limit, so later eligible hits can
+still fill the template set. Explicit templates already declared in JSON are not
+filtered. Neither the cutoff nor release dates are persisted in `_data.json`; callers
+that require an audit trail must retain the data-pipeline command or scheduler record.
+
 The wrapper exposes one plural `--seeds` option, with one trunk execution and five
 diffusion samples per seed by default. The upstream `num_trunk_samples` execution
 axis is removed. Results are appendable by non-overlapping seed under
@@ -239,6 +249,11 @@ second diversity axis; multiple independent trunk runs are represented by seeds.
   M8/RCSB/Kalign parsing produced four mapping+CIF.zst artifacts, no M8 was persisted,
   and inference from the resulting `_data.json` completed successfully. Kalign is an
   external runtime requirement and is not installed by the Python package itself.
+- The later template-date extension validates strict ISO input, earliest-revision
+  extraction from mmCIF (including a real compressed 1CRN download), inclusive cutoff
+  behavior, rejection of newer or unknown-date search hits before Kalign, and
+  continuation to lower-ranked eligible candidates. The current full Linux regression
+  is 84 tests plus 8 subtests.
 - Default production settings (three recycles, 200 diffusion steps, five samples)
   produced five complete model/summary/PAE/PDE/pLDDT sets. One-process multi-seed,
   complete and partial skip, and two concurrent GPU processes writing non-overlapping

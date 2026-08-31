@@ -25,6 +25,7 @@ usage() {
     echo "-p <sampling_steps>             Number of diffusion sampling steps. (default: 200)"
     echo "-M <use_msa_server>             Search missing protein MSAs. (default: true)"
     echo "-T <use_templates_server>       Search missing templates. (default: false)"
+    echo "-m <max_template_date>          Latest searched-template release date. (default: 2099-01-01)"
     echo "-S <skip>                       Skip seeds whose expected outputs exist. (default: false)"
     echo "-h                              Show this help."
     echo ""
@@ -38,7 +39,7 @@ usage() {
 }
 
 # region: Parse command line arguments
-while getopts "i:o:d:D:P:r:n:c:p:M:T:S:h" opt; do
+while getopts "i:o:d:D:P:r:n:c:p:M:T:m:S:h" opt; do
     case "${opt}" in
     i) input_path=$OPTARG ;;
     o) output_dir=$OPTARG ;;
@@ -51,6 +52,7 @@ while getopts "i:o:d:D:P:r:n:c:p:M:T:S:h" opt; do
     p) sampling_steps=$OPTARG ;;
     M) use_msa_server=$OPTARG ;;
     T) use_templates_server=$OPTARG ;;
+    m) max_template_date=$OPTARG ;;
     S) skip=$OPTARG ;;
     h) usage ;;
     *) usage ;;
@@ -78,6 +80,7 @@ if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
 if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
 if [[ "$use_msa_server" == "" ]]; then use_msa_server="true"; fi
 if [[ "$use_templates_server" == "" ]]; then use_templates_server="false"; fi
+if [[ "$max_template_date" == "" ]]; then max_template_date="2099-01-01"; fi
 if [[ "$skip" == "" ]]; then skip="false"; fi
 
 if [[ "$run_data_pipeline" == "false" && "$run_inference" == "false" ]]; then
@@ -115,6 +118,7 @@ command_args=(
     --sampling-steps "$sampling_steps"
     --use-msa-server "$use_msa_server"
     --use-templates-server "$use_templates_server"
+    --max-template-date "$max_template_date"
     --skip "$skip"
 )
 
