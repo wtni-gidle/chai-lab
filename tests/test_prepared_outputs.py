@@ -111,9 +111,7 @@ class PreparedOutputTest(unittest.TestCase):
             ):
                 with np.load(path, allow_pickle=False) as archive:
                     self.assertEqual(archive.files, [key])
-            self.assertEqual(
-                (root / "predictions" / "msa_depth.pdf").read_bytes(), b"%PDF-test"
-            )
+            self.assertFalse((root / "predictions" / "msa_depth.pdf").exists())
             self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
             self.assertTrue(
                 seed_outputs_complete(root / "predictions", seed=42, sample_count=2)
@@ -165,9 +163,7 @@ class PreparedOutputTest(unittest.TestCase):
                     )
                 )
             self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
-            self.assertGreater(
-                (root / "predictions" / "msa_depth.pdf").stat().st_size, 0
-            )
+            self.assertFalse((root / "predictions" / "msa_depth.pdf").exists())
 
 
 if __name__ == "__main__":

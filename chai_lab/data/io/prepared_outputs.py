@@ -193,8 +193,11 @@ def publish_structure_candidates(
             )
         )
 
-    if candidates.msa_coverage_plot_path is not None:
-        _atomic_copy(
-            candidates.msa_coverage_plot_path, predictions_dir / "msa_depth.pdf"
-        )
+    # The native MSA coverage PDF is diagnostic only. Do not publish it into the
+    # shared prediction tree: every seed produces the same target-level plot, so
+    # multi-process seed jobs would repeatedly replace one common file.
+    # if candidates.msa_coverage_plot_path is not None:
+    #     _atomic_copy(
+    #         candidates.msa_coverage_plot_path, predictions_dir / "msa_depth.pdf"
+    #     )
     return tuple(published)

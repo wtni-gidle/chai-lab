@@ -197,8 +197,9 @@ second diversity axis; multiple independent trunk runs are represented by seeds.
 - Coverage includes real CLI data-only execution, CLI option forwarding, seed parsing
   and validation, one feature-context construction reused across multiple seeds,
   native restraint parsing at inference, exact output names, summary serialization,
-  separate NPZ keys, MSA plot publication, and rejection of inconsistent candidate
-  arrays.
+  separate NPZ keys and rejection of inconsistent candidate arrays. The wrapper does
+  not publish Chai's diagnostic `msa_depth.pdf`: it is independent of seed and would
+  otherwise be repeatedly overwritten by concurrent seed jobs.
 - `chai-lab fold --help`, focused Ruff checks/formatting,
   `python3 -m compileall -q chai_lab tests`, and `git diff --check` passed.
 
