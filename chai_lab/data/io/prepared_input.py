@@ -19,14 +19,12 @@ from chai_lab.data.parsing.structure.entity_type import EntityType
 
 PREPARED_INPUT_VERSION = 1
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
-_TOP_LEVEL_FIELDS = {
+_TOP_LEVEL_REQUIRED_FIELDS = {
     "version",
     "name",
     "sequences",
-    "use_esm_embeddings",
-    "entity_ids_as_cif_chains",
-    "constraint_path",
 }
+_TOP_LEVEL_OPTIONAL_FIELDS: set[str] = set()
 _ENTITY_TYPES = {"protein", "rna", "dna", "ligand", "glycan"}
 _ENTITY_REQUIRED_FIELDS = {
     "protein": {"id", "sequence"},
@@ -112,18 +110,6 @@ def _expect_fields(
         raise PreparedInputError(
             f"{location} has unknown fields: {', '.join(sorted(unknown))}"
         )
-
-
-def _expect_exact_fields(
-    value: Mapping[str, Any], expected: set[str], location: str
-) -> None:
-    _expect_fields(value, expected, set(), location)
-
-
-def _expect_bool(value: Any, location: str) -> bool:
-    if not isinstance(value, bool):
-        raise PreparedInputError(f"{location} must be a boolean")
-    return value
 
 
 def _expect_nonempty_string(value: Any, location: str) -> str:
@@ -420,14 +406,16 @@ class PreparedInput:
     version: int
     name: str
     sequences: tuple[PreparedEntity, ...]
-    use_esm_embeddings: bool
-    entity_ids_as_cif_chains: bool
-    constraint_path: Path | None
 
     @classmethod
     def from_dict(cls, value: Any) -> "PreparedInput":
         data = _expect_mapping(value, "prepared input")
-        _expect_exact_fields(data, _TOP_LEVEL_FIELDS, "prepared input")
+        _expect_fields(
+            data,
+            _TOP_LEVEL_REQUIRED_FIELDS,
+            _TOP_LEVEL_OPTIONAL_FIELDS,
+            "prepared input",
+        )
 
         version = data["version"]
         if type(version) is not int or version != PREPARED_INPUT_VERSION:
@@ -467,29 +455,15 @@ class PreparedInput:
             version=version,
             name=validate_target_name(data["name"]),
             sequences=sequences,
-            use_esm_embeddings=_expect_bool(
-                data["use_esm_embeddings"], "use_esm_embeddings"
-            ),
-            entity_ids_as_cif_chains=_expect_bool(
-                data["entity_ids_as_cif_chains"],
-                "entity_ids_as_cif_chains",
-            ),
-            constraint_path=_optional_path(data["constraint_path"], "constraint_path"),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "version": self.version,
             "name": self.name,
             "sequences": [entity.to_dict() for entity in self.sequences],
-            "use_esm_embeddings": self.use_esm_embeddings,
-            "entity_ids_as_cif_chains": self.entity_ids_as_cif_chains,
-            "constraint_path": (
-                None
-                if self.constraint_path is None
-                else os.fspath(self.constraint_path)
-            ),
         }
+        return data
 
     def resolved(self, manifest_path: str | Path) -> "PreparedInput":
         """Return a copy with every declared resource path made absolute."""
@@ -499,13 +473,6 @@ class PreparedInput:
             name=self.name,
             sequences=tuple(
                 entity.resolved(manifest_path) for entity in self.sequences
-            ),
-            use_esm_embeddings=self.use_esm_embeddings,
-            entity_ids_as_cif_chains=self.entity_ids_as_cif_chains,
-            constraint_path=(
-                None
-                if self.constraint_path is None
-                else _resolve_path(self.constraint_path, manifest_path)
             ),
         )
 
@@ -531,8 +498,6 @@ class PreparedInput:
                             f"sequences[{index}].protein.templates["
                             f"{template_index}].mmcifPath",
                         )
-        if resolved.constraint_path is not None:
-            _require_file(resolved.constraint_path, "constraint_path")
         return resolved
 
     def to_chai_inputs(self) -> list[Input]:

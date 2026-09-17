@@ -28,6 +28,8 @@ class RunChai1ScriptTest(unittest.TestCase):
             fake_chai.chmod(0o755)
             request = root / "seq.json"
             request.write_text("{}\n", encoding="utf-8")
+            constraint = root / "constraints.csv"
+            constraint.write_text("test\n", encoding="utf-8")
             environment = {
                 **os.environ,
                 "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
@@ -59,6 +61,12 @@ class RunChai1ScriptTest(unittest.TestCase):
                     "-M",
                     "false",
                     "-T",
+                    "true",
+                    "-E",
+                    "false",
+                    "-x",
+                    str(constraint),
+                    "-C",
                     "true",
                     "-S",
                     "true",
@@ -94,10 +102,16 @@ class RunChai1ScriptTest(unittest.TestCase):
                     "true",
                     "--max-template-date",
                     "2099-01-01",
+                    "--use-esm-embeddings",
+                    "false",
+                    "--fasta-names-as-cif-chains",
+                    "true",
                     "--skip",
                     "true",
                     "--seeds",
                     "7,8",
+                    "--constraint-path",
+                    str(constraint),
                 ],
             )
 

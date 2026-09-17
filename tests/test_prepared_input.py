@@ -38,22 +38,40 @@ def _manifest_dict() -> dict:
             {"ligand": {"id": ["L"], "smiles": "CC(=O)O"}},
             {"glycan": {"id": ["G"], "sequence": "MAN(6-1 MAN)"}},
         ],
-        "use_esm_embeddings": True,
-        "entity_ids_as_cif_chains": False,
-        "constraint_path": "constraints/seq.restraints.csv",
     }
 
 
 class PreparedInputTest(unittest.TestCase):
+    def test_runtime_options_are_rejected_from_json(self):
+        manifest = _manifest_dict()
+        protein = manifest["sequences"][0]["protein"]
+        protein["pairedMsa"] = ""
+        protein.pop("pairedMsaPath")
+        protein["unpairedMsa"] = ">query\nAAAA\n"
+        protein.pop("unpairedMsaPath")
+        prepared = PreparedInput.from_dict(manifest)
+        serialized = prepared.to_dict()
+        self.assertNotIn("use_esm_embeddings", serialized)
+        self.assertNotIn("constraint_path", serialized)
+
+        for runtime_field, value in (
+            ("use_esm_embeddings", False),
+            ("constraint_path", "constraints.csv"),
+        ):
+            configured = dict(manifest)
+            configured[runtime_field] = value
+            with self.subTest(runtime_field=runtime_field), self.assertRaisesRegex(
+                PreparedInputError, f"unknown fields: {runtime_field}"
+            ):
+                PreparedInput.from_dict(configured)
+
     def test_round_trip_and_relative_path_resolution(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             job_dir = Path(temporary_directory) / "seq"
             (job_dir / "msas").mkdir(parents=True)
-            (job_dir / "constraints").mkdir()
             for path in (
                 job_dir / "msas" / "seq__A_pairedmsa.a3m.zst",
                 job_dir / "msas" / "seq__A_unpairedmsa.a3m.zst",
-                job_dir / "constraints" / "seq.restraints.csv",
             ):
                 path.write_text("test\n", encoding="utf-8")
 
@@ -78,7 +96,6 @@ class PreparedInputTest(unittest.TestCase):
         del protein["unpairedMsaPath"]
         del protein["unpairedMsaFallbackSource"]
         protein["templates"] = None
-        manifest["constraint_path"] = None
 
         prepared = PreparedInput.from_dict(manifest)
         self.assertIsNone(prepared.sequences[0].paired_msa)
@@ -167,6 +184,13 @@ class PreparedInputTest(unittest.TestCase):
         with self.assertRaisesRegex(PreparedInputError, "missing fields: sequences"):
             PreparedInput.from_dict(manifest)
 
+        manifest = _manifest_dict()
+        manifest["entity_ids_as_cif_chains"] = True
+        with self.assertRaisesRegex(
+            PreparedInputError, "unknown fields: entity_ids_as_cif_chains"
+        ):
+            PreparedInput.from_dict(manifest)
+
     def test_schema_rejects_unsafe_or_duplicate_entity_ids(self):
         manifest = _manifest_dict()
         manifest["name"] = "../seq"
@@ -227,7 +251,6 @@ class WorkflowPlanTest(unittest.TestCase):
             protein = manifest["sequences"][0]["protein"]
             protein.pop("pairedMsaPath")
             protein.pop("unpairedMsaPath")
-            manifest["constraint_path"] = None
             input_path = root / "arbitrary_name.json"
             input_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -251,7 +274,6 @@ class WorkflowPlanTest(unittest.TestCase):
             protein = manifest["sequences"][0]["protein"]
             protein.pop("pairedMsaPath")
             protein.pop("unpairedMsaPath")
-            manifest["constraint_path"] = None
             manifest_path = root / "anything.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 

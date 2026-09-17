@@ -4,6 +4,7 @@
 
 """AF3-style persistence for templates parsed by Chai's native pipeline."""
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date
@@ -19,6 +20,9 @@ from chai_lab.data.io.prepared_input import (
 
 class PreparedTemplateError(ValueError):
     """Raised when prepared template structures or mappings are invalid."""
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_TEMPLATE_DATE = date(2099, 1, 1)
@@ -52,6 +56,13 @@ def _single_chain_mmcif(cif_path: Path, chain_id: str) -> str:
         raise PreparedTemplateError(
             f"Template chain {chain_id!r} is absent from {cif_path}"
         )
+    source_polymer = selected.get_polymer()
+    source_entity = source.get_entity_of(source_polymer)
+    source_full_sequence = list(source_entity.full_sequence)
+    if not source_full_sequence:
+        raise PreparedTemplateError(
+            f"Template chain {chain_id!r} has no entity polymer sequence"
+        )
 
     structure = gemmi.Structure()
     structure.name = f"{source.name}_{chain_id}"
@@ -59,7 +70,7 @@ def _single_chain_mmcif(cif_path: Path, chain_id: str) -> str:
     structure.spacegroup_hm = source.spacegroup_hm
     model = gemmi.Model("1")
     chain = gemmi.Chain(chain_id)
-    for residue in selected.get_polymer():
+    for residue in source_polymer:
         chain.add_residue(residue.clone())
     if not chain:
         raise PreparedTemplateError(
@@ -72,12 +83,55 @@ def _single_chain_mmcif(cif_path: Path, chain_id: str) -> str:
         raise PreparedTemplateError(
             f"Expected one entity after extracting template chain {chain_id!r}"
         )
-    structure.entities[0].full_sequence = [
-        residue.name for residue in structure[0][0].get_polymer()
-    ]
+    # Template-hit indices use the source entity's full polymer sequence. Keep that
+    # sequence, including unresolved residues, instead of replacing it with only the
+    # coordinate-bearing residues copied above.
+    structure.entities[0].full_sequence = source_full_sequence
     structure.assign_subchains()
     structure.assign_label_seq_id()
     return structure.make_mmcif_document().as_string()
+
+
+def _matches_native_template_features(native_loaded, prepared: PreparedTemplate) -> bool:
+    """Require a saved template to reconstruct the exact native Chai features."""
+    import torch
+
+    try:
+        rebuilt = _as_loaded_template(
+            prepared,
+            query_id=native_loaded.query_identifier,
+            query_token_count=int(native_loaded.query_crop_indices.shape[0]),
+        )
+        exact_fields = (
+            "template_restype",
+            "template_pseudo_beta_mask",
+            "template_backbone_frame_mask",
+        )
+        float_fields = (
+            "template_pseudo_beta_distances",
+            "template_unit_vector",
+        )
+        for field in exact_fields:
+            if not torch.equal(getattr(native_loaded, field), getattr(rebuilt, field)):
+                return False
+        for field in float_fields:
+            if not torch.allclose(
+                getattr(native_loaded, field),
+                getattr(rebuilt, field),
+                rtol=1e-5,
+                atol=1e-5,
+                equal_nan=True,
+            ):
+                return False
+    except (IndexError, PreparedTemplateError, RuntimeError, ValueError):
+        logger.warning(
+            "Skipping template %s because its saved structure cannot reconstruct "
+            "the native Chai template features",
+            native_loaded.hit_identifier,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def prepared_template_from_loaded(loaded_template, mmcif: str) -> PreparedTemplate:
@@ -141,12 +195,18 @@ def parse_native_template_hits(
             raise PreparedTemplateError(
                 "Native template parsing did not retain a local CIF path"
             )
-        prepared_templates.append(
-            prepared_template_from_loaded(
-                template,
-                _single_chain_mmcif(hit.cif_path, hit.chain_id),
-            )
+        prepared = prepared_template_from_loaded(
+            template,
+            _single_chain_mmcif(hit.cif_path, hit.chain_id),
         )
+        if not _matches_native_template_features(template, prepared):
+            logger.warning(
+                "Skipping template %s because prepared-template round-trip "
+                "validation failed",
+                template.hit_identifier,
+            )
+            continue
+        prepared_templates.append(prepared)
     return tuple(prepared_templates)
 
 

@@ -26,6 +26,9 @@ usage() {
     echo "-M <use_msa_server>             Search missing protein MSAs. (default: true)"
     echo "-T <use_templates_server>       Search missing templates. (default: false)"
     echo "-m <max_template_date>          Latest searched-template release date. (default: 2099-01-01)"
+    echo "-E <use_esm_embeddings>         Generate ESM embeddings in inference. (default: true)"
+    echo "-x <constraint_path>            Optional native Chai restraint CSV."
+    echo "-C <fasta_names_as_cif_chains> Use input IDs as CIF chain names. (default: false)"
     echo "-S <skip>                       Skip seeds whose expected outputs exist. (default: false)"
     echo "-h                              Show this help."
     echo ""
@@ -39,7 +42,7 @@ usage() {
 }
 
 # region: Parse command line arguments
-while getopts "i:o:d:D:P:r:n:c:p:M:T:m:S:h" opt; do
+while getopts "i:o:d:D:P:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
     case "${opt}" in
     i) input_path=$OPTARG ;;
     o) output_dir=$OPTARG ;;
@@ -53,6 +56,9 @@ while getopts "i:o:d:D:P:r:n:c:p:M:T:m:S:h" opt; do
     M) use_msa_server=$OPTARG ;;
     T) use_templates_server=$OPTARG ;;
     m) max_template_date=$OPTARG ;;
+    E) use_esm_embeddings=$OPTARG ;;
+    x) constraint_path=$OPTARG ;;
+    C) fasta_names_as_cif_chains=$OPTARG ;;
     S) skip=$OPTARG ;;
     h) usage ;;
     *) usage ;;
@@ -81,6 +87,8 @@ if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
 if [[ "$use_msa_server" == "" ]]; then use_msa_server="true"; fi
 if [[ "$use_templates_server" == "" ]]; then use_templates_server="false"; fi
 if [[ "$max_template_date" == "" ]]; then max_template_date="2099-01-01"; fi
+if [[ "$use_esm_embeddings" == "" ]]; then use_esm_embeddings="true"; fi
+if [[ "$fasta_names_as_cif_chains" == "" ]]; then fasta_names_as_cif_chains="false"; fi
 if [[ "$skip" == "" ]]; then skip="false"; fi
 
 if [[ "$run_data_pipeline" == "false" && "$run_inference" == "false" ]]; then
@@ -119,11 +127,16 @@ command_args=(
     --use-msa-server "$use_msa_server"
     --use-templates-server "$use_templates_server"
     --max-template-date "$max_template_date"
+    --use-esm-embeddings "$use_esm_embeddings"
+    --fasta-names-as-cif-chains "$fasta_names_as_cif_chains"
     --skip "$skip"
 )
 
 if [[ "$model_seeds" != "" ]]; then
     command_args+=(--seeds "$model_seeds")
+fi
+if [[ "$constraint_path" != "" ]]; then
+    command_args+=(--constraint-path "$constraint_path")
 fi
 
 # Run Chai-1 with the requested parameters.

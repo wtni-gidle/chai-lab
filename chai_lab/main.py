@@ -81,6 +81,23 @@ def fold(
     recycle_msa_subsample: int = typer.Option(0, "--recycle-msa-subsample"),
     device: str | None = typer.Option(None, "--device"),
     low_memory: str = typer.Option("true", "--low-memory"),
+    use_esm_embeddings: str = typer.Option(
+        "true",
+        "--use-esm-embeddings",
+        help="Generate ESM embeddings during inference.",
+    ),
+    constraint_path: Path | None = typer.Option(
+        None,
+        "--constraint-path",
+        exists=True,
+        dir_okay=False,
+        help="Optional native Chai restraint CSV used during inference.",
+    ),
+    fasta_names_as_cif_chains: str = typer.Option(
+        "false",
+        "--fasta-names-as-cif-chains",
+        help="Use input entity IDs as internal subchain and output CIF chain names.",
+    ),
     skip: str = typer.Option(
         "false", "-S", "--skip", help="Skip seeds with every expected output file."
     ),
@@ -105,6 +122,14 @@ def fold(
             num_diffn_samples=diffusion_samples,
             device=device,
             low_memory=_boolean_option(low_memory, "--low-memory"),
+            use_esm_embeddings=_boolean_option(
+                use_esm_embeddings, "--use-esm-embeddings"
+            ),
+            constraint_path=constraint_path,
+            fasta_names_as_cif_chains=_boolean_option(
+                fasta_names_as_cif_chains,
+                "--fasta-names-as-cif-chains",
+            ),
             skip=_boolean_option(skip, "--skip"),
         )
     except (ValueError, FileNotFoundError) as error:

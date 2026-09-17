@@ -21,7 +21,7 @@ from chai_lab.workflow import (
 )
 
 
-def _minimal_manifest(*, constraint_path: str | None = None) -> dict:
+def _minimal_manifest() -> dict:
     return {
         "version": 1,
         "name": "seq",
@@ -45,9 +45,6 @@ def _minimal_manifest(*, constraint_path: str | None = None) -> dict:
                 }
             },
         ],
-        "use_esm_embeddings": False,
-        "entity_ids_as_cif_chains": True,
-        "constraint_path": constraint_path,
     }
 
 
@@ -86,8 +83,7 @@ class PreparedFeatureContextTest(unittest.TestCase):
                 "G,G1,H,H1,contact,1.0,0.0,8.0,test,contact_1\n",
                 encoding="utf-8",
             )
-            manifest = _minimal_manifest(constraint_path=str(constraint))
-            prepared = PreparedInput.from_dict(manifest)
+            prepared = PreparedInput.from_dict(_minimal_manifest())
             msa_directory = root / "msas"
             msa_directory.mkdir()
 
@@ -95,6 +91,9 @@ class PreparedFeatureContextTest(unittest.TestCase):
                 prepared,
                 msa_directory=msa_directory,
                 esm_device=torch.device("cpu"),
+                use_esm_embeddings=False,
+                constraint_path=constraint,
+                fasta_names_as_cif_chains=True,
             )
 
             self.assertEqual(
@@ -154,13 +153,22 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                     seeds="4,5",
                     num_diffn_samples=1,
                     device="cpu",
+                    fasta_names_as_cif_chains=True,
                 )
 
             self.assertEqual(result.seeds, (4, 5))
             self.assertEqual(len(result.prediction_paths), 2)
             self.assertEqual(build_msa.call_count, 1)
             self.assertEqual(make_context.call_count, 1)
+            self.assertTrue(
+                make_context.call_args.kwargs["fasta_names_as_cif_chains"]
+            )
             self.assertEqual(fold.call_count, 2)
+            self.assertTrue(
+                fold.call_args_list[0].kwargs[
+                    "entity_names_as_chain_names_in_output_cif"
+                ]
+            )
             self.assertEqual(
                 [item.kwargs["seed"] for item in fold.call_args_list], [4, 5]
             )

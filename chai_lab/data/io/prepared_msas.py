@@ -241,15 +241,9 @@ def prepare_data_bundle(
         else:
             rewritten_entities.append(original_entity)
 
-    bundled_constraint = (
-        None
-        if resolved.constraint_path is None
-        else _relative_path(resolved.constraint_path, output_manifest)
-    )
     bundled = replace(
         prepared,
         sequences=tuple(rewritten_entities),
-        constraint_path=bundled_constraint,
     )
     write_prepared_input(bundled, output_manifest)
     return bundled

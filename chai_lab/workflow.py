@@ -131,6 +131,9 @@ def make_prepared_feature_context(
     *,
     msa_directory: Path,
     esm_device: torch.device,
+    use_esm_embeddings: bool = True,
+    constraint_path: Path | None = None,
+    fasta_names_as_cif_chains: bool = False,
 ):
     """Build Chai's native feature-context boundary from a resolved prepared JSON."""
     from chai_lab.data.collate.utils import AVAILABLE_MODEL_SIZES
@@ -159,7 +162,7 @@ def make_prepared_feature_context(
     chains = load_chains_from_raw(
         prepared.to_chai_inputs(),
         identifier=prepared.name,
-        entity_name_as_subchain=prepared.entity_ids_as_cif_chains,
+        entity_name_as_subchain=fasta_names_as_cif_chains,
     )
     merged_context = AllAtomStructureContext.merge(
         [chain.structure_context for chain in chains]
@@ -189,15 +192,15 @@ def make_prepared_feature_context(
         )
 
     template_context = get_prepared_template_context(chains, prepared)
-    if prepared.use_esm_embeddings:
+    if use_esm_embeddings:
         embedding_context = get_esm_embedding_context(chains, device=esm_device)
     else:
         embedding_context = EmbeddingContext.empty(n_tokens=n_actual_tokens)
 
-    if prepared.constraint_path is None:
+    if constraint_path is None:
         restraint_context = RestraintContext.empty()
     else:
-        constraints = parse_pairwise_table(prepared.constraint_path)
+        constraints = parse_pairwise_table(constraint_path)
         restraint_context = load_manual_restraints_for_chai1(
             chains,
             crop_idces=None,
@@ -275,6 +278,9 @@ def run_prepared_workflow(
     num_diffn_samples: int = 5,
     device: str | None = None,
     low_memory: bool = True,
+    use_esm_embeddings: bool = True,
+    constraint_path: str | Path | None = None,
+    fasta_names_as_cif_chains: bool = False,
     skip: bool = False,
 ) -> WorkflowResult:
     """Execute data preparation and/or inference for one prepared JSON target."""
@@ -352,6 +358,14 @@ def run_prepared_workflow(
         )
 
     prepared = load_prepared_input(manifest_path).validate_resources(manifest_path)
+    resolved_constraint_path = None
+    if constraint_path is not None:
+        resolved_constraint_path = Path(constraint_path).expanduser().resolve()
+        if not resolved_constraint_path.is_file():
+            raise FileNotFoundError(
+                f"constraint_path does not exist or is not a file: "
+                f"{resolved_constraint_path}"
+            )
     torch_device = torch.device(device if device is not None else "cuda:0")
 
     from chai_lab.data.io.prepared_msas import build_private_msa_directory
@@ -367,6 +381,9 @@ def run_prepared_workflow(
             prepared,
             msa_directory=private_msa_directory,
             esm_device=torch_device,
+            use_esm_embeddings=use_esm_embeddings,
+            constraint_path=resolved_constraint_path,
+            fasta_names_as_cif_chains=fasta_names_as_cif_chains,
         )
         for seed in pending_seeds:
             logger.info("Running seed %d", seed)
@@ -377,9 +394,7 @@ def run_prepared_workflow(
                 num_trunk_recycles=num_trunk_recycles,
                 num_diffn_timesteps=num_diffn_timesteps,
                 num_diffn_samples=num_diffn_samples,
-                entity_names_as_chain_names_in_output_cif=(
-                    prepared.entity_ids_as_cif_chains
-                ),
+                entity_names_as_chain_names_in_output_cif=fasta_names_as_cif_chains,
                 seed=seed,
                 device=torch_device,
                 low_memory=low_memory,

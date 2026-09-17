@@ -23,6 +23,9 @@ class PreparedCLITest(unittest.TestCase):
         self.assertIn("--seeds", result.output)
         self.assertIn("--diffusion-samples", result.output)
         self.assertIn("--max-template-date", result.output)
+        self.assertIn("--use-esm-embeddings", result.output)
+        self.assertIn("--constraint-path", result.output)
+        self.assertIn("--fasta-names-as-cif-chains", result.output)
         self.assertIn("--skip", result.output)
         self.assertNotIn("num-trunk-samples", result.output)
 
@@ -31,6 +34,8 @@ class PreparedCLITest(unittest.TestCase):
             root = Path(temporary)
             request = root / "seq.json"
             request.write_text("{}", encoding="utf-8")
+            constraint = root / "constraints.csv"
+            constraint.write_text("test\n", encoding="utf-8")
             expected = WorkflowResult(
                 prepared_path=(root / "result/seq/seq_data.json").resolve(),
                 seeds=(),
@@ -55,6 +60,12 @@ class PreparedCLITest(unittest.TestCase):
                         "false",
                         "--max-template-date",
                         "2021-09-30",
+                        "--use-esm-embeddings",
+                        "false",
+                        "--constraint-path",
+                        str(constraint),
+                        "--fasta-names-as-cif-chains",
+                        "true",
                         "-r",
                         "4,5",
                         "-S",
@@ -69,6 +80,9 @@ class PreparedCLITest(unittest.TestCase):
             self.assertTrue(kwargs["use_msa_server"])
             self.assertFalse(kwargs["use_templates_server"])
             self.assertEqual(kwargs["max_template_date"], "2021-09-30")
+            self.assertFalse(kwargs["use_esm_embeddings"])
+            self.assertEqual(kwargs["constraint_path"], constraint)
+            self.assertTrue(kwargs["fasta_names_as_cif_chains"])
             self.assertEqual(kwargs["seeds"], "4,5")
             self.assertTrue(kwargs["skip"])
 
@@ -86,13 +100,9 @@ class PreparedCLITest(unittest.TestCase):
                                 "protein": {
                                     "id": ["A"],
                                     "sequence": "AAAA",
-                                    "templates": None,
                                 }
                             }
                         ],
-                        "use_esm_embeddings": False,
-                        "entity_ids_as_cif_chains": False,
-                        "constraint_path": None,
                     }
                 ),
                 encoding="utf-8",

@@ -3,7 +3,6 @@
 # See the LICENSE file for details.
 
 import json
-import os
 import tempfile
 import unittest
 from datetime import date
@@ -12,11 +11,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from chai_lab.data.io.compression import read_text_auto, write_zstd_text
-from chai_lab.data.io.prepared_input import PreparedTemplate, load_prepared_input
+from chai_lab.data.io.prepared_input import PreparedTemplate
 from chai_lab.data.io.prepared_msas import prepare_data_bundle
 from chai_lab.data.io.prepared_templates import (
     _as_loaded_template,
     _load_template_structure_context,
+    _matches_native_template_features,
     _single_chain_mmcif,
     parse_max_template_date,
     prepared_template_from_loaded,
@@ -35,7 +35,6 @@ MMCIF_B = "data_template_B\n#\n"
 def _manifest(
     *,
     templates: list[dict] | None = None,
-    constraint_path: str | None = None,
 ) -> dict:
     return {
         "version": 1,
@@ -51,9 +50,6 @@ def _manifest(
                 }
             }
         ],
-        "use_esm_embeddings": True,
-        "entity_ids_as_cif_chains": False,
-        "constraint_path": constraint_path,
     }
 
 
@@ -369,31 +365,6 @@ _pdbx_audit_revision_history.revision_date
             kalign.assert_not_called()
 
 
-class NativeConstraintPassthroughTest(unittest.TestCase):
-    def test_constraint_is_not_copied_or_parsed_by_data_pipeline(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            constraint = root / "native_constraints.csv"
-            constraint.write_text("intentionally,parsed,later\n", encoding="utf-8")
-            request = _write_request(
-                root,
-                _manifest(templates=[], constraint_path=constraint.name),
-            )
-            output = root / "result/seq/seq_data.json"
-            prepare_data_bundle(request, output, use_msa_server=False)
-
-            data = json.loads(output.read_text())
-            constraint_from_output = (output.parent / data["constraint_path"]).resolve()
-            self.assertEqual(constraint_from_output, constraint.resolve())
-            self.assertEqual(
-                data["constraint_path"],
-                os.path.relpath(constraint.resolve(), output.parent.resolve()),
-            )
-            self.assertFalse((output.parent / "constraints").exists())
-            resolved = load_prepared_input(output).validate_resources(output)
-            self.assertEqual(resolved.constraint_path, constraint.resolve())
-
-
 class PreparedTemplateFeatureRoundTripTest(unittest.TestCase):
     @staticmethod
     def _protein_mmcif() -> str:
@@ -452,6 +423,31 @@ class PreparedTemplateFeatureRoundTripTest(unittest.TestCase):
             context = _load_template_structure_context(extracted)
             self.assertEqual(context.num_tokens, 4)
 
+    def test_single_chain_mmcif_preserves_unresolved_entity_residues(self):
+        import gemmi
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source_with_gap.cif"
+            structure = gemmi.read_structure_string(self._protein_mmcif())
+            structure.entities[0].full_sequence = [
+                "ALA",
+                "CYS",
+                "ASP",
+                "GLY",
+                "GLU",
+            ]
+            structure.assign_label_seq_id()
+            source.write_text(
+                structure.make_mmcif_document().as_string(), encoding="utf-8"
+            )
+
+            extracted = _single_chain_mmcif(source, "A")
+            round_tripped = gemmi.read_structure_string(extracted)
+            self.assertEqual(
+                list(round_tripped.entities[0].full_sequence),
+                ["ALA", "CYS", "ASP", "GLY", "GLU"],
+            )
+
     def test_saved_structure_and_mapping_rebuild_native_template_features(self):
         import torch
 
@@ -488,6 +484,15 @@ class PreparedTemplateFeatureRoundTripTest(unittest.TestCase):
         self.assertEqual(prepared.query_indices, (0, 1, 3))
         self.assertEqual(prepared.template_indices, (0, 2, 3))
         rebuilt_loaded = _as_loaded_template(prepared, "A", 4)
+        self.assertTrue(_matches_native_template_features(native_loaded, prepared))
+
+        invalid = PreparedTemplate(
+            mmcif=mmcif,
+            mmcif_path=None,
+            query_indices=(0, 1, 3),
+            template_indices=(0, 2, 4),
+        )
+        self.assertFalse(_matches_native_template_features(native_loaded, invalid))
 
         native_context = TemplateContext.from_loaded_templates(
             n_tokens=4, templates=[native_loaded]
