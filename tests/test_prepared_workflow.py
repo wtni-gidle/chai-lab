@@ -15,6 +15,7 @@ import torch
 from chai_lab.data.io.prepared_input import PreparedInput
 from chai_lab.data.io.prepared_outputs import expected_seed_samples
 from chai_lab.workflow import (
+    build_workflow_plan,
     make_prepared_feature_context,
     normalize_seeds,
     run_prepared_workflow,
@@ -105,6 +106,28 @@ class PreparedFeatureContextTest(unittest.TestCase):
 
 
 class PreparedWorkflowExecutionTest(unittest.TestCase):
+    def test_outputs_use_job_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "input.json"
+            source.write_text(json.dumps(_minimal_manifest()), encoding="utf-8")
+
+            plan = build_workflow_plan(
+                source,
+                root / "results",
+                run_data_pipeline=False,
+                run_inference=True,
+            )
+
+            job = (root / "results/seq").resolve()
+            self.assertEqual(plan.predictions_dir, job)
+            sample = expected_seed_samples(job, seed=7, sample_count=1)[0]
+            self.assertEqual(
+                sample.model_path,
+                job / "models/seed-7_sample-0_model.cif",
+            )
+            self.assertFalse(job.exists())
+
     def test_feature_context_is_built_once_and_reused_for_all_seeds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -177,12 +200,12 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                 [
                     call(
                         native_candidates,
-                        predictions_dir=(root / "result/seq/predictions").resolve(),
+                        predictions_dir=(root / "result/seq").resolve(),
                         seed=4,
                     ),
                     call(
                         native_candidates,
-                        predictions_dir=(root / "result/seq/predictions").resolve(),
+                        predictions_dir=(root / "result/seq").resolve(),
                         seed=5,
                     ),
                 ],
@@ -194,7 +217,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
             root = Path(temporary)
             request = root / "seq_data.json"
             request.write_text(json.dumps(_minimal_manifest()), encoding="utf-8")
-            predictions = root / "result/seq/predictions"
+            predictions = root / "result/seq"
             expected = expected_seed_samples(predictions, seed=4, sample_count=2)
             for sample in expected:
                 for path in (

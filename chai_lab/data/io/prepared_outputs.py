@@ -130,7 +130,7 @@ def _atomic_npz(path: Path, key: str, value: Any) -> Path:
     temporary = _temporary_sibling(path)
     try:
         with temporary.open("wb") as handle:
-            np.savez(handle, **{key: np.asarray(value)})
+            np.savez_compressed(handle, **{key: np.asarray(value)})
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

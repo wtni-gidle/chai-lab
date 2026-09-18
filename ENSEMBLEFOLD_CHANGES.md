@@ -41,7 +41,7 @@ that require an audit trail must retain the data-pipeline command or scheduler r
 The wrapper exposes one plural `--seeds` option, with one trunk execution and five
 diffusion samples per seed by default. The upstream `num_trunk_samples` execution
 axis is removed. Results are appendable by non-overlapping seed under
-`predictions/{models,summary_confidences,full_data}`, and lightweight `--skip`
+`<job>/{models,summary_confidences,full_data}`, and lightweight `--skip`
 checks the five expected nonempty files for every seed/sample. Same-seed concurrent
 execution is deliberately not locked and remains unsupported.
 
@@ -129,13 +129,14 @@ Native candidates are first written in a process-private temporary directory and
 atomically published without confidence re-ranking to:
 
 ```text
-predictions/models/seed-<seed>_sample-<sample>_model.cif
-predictions/summary_confidences/seed-<seed>_sample-<sample>_summary_confidences.json
-predictions/full_data/{pae,pde,plddt}_seed-<seed>_sample-<sample>.npz
+<job>/models/seed-<seed>_sample-<sample>_model.cif
+<job>/summary_confidences/seed-<seed>_sample-<sample>_summary_confidences.json
+<job>/full_data/{pae,pde,plddt}_seed-<seed>_sample-<sample>.npz
 ```
 
 Summary JSON retains Chai's aggregate, pTM, ipTM, per-chain/pair, and clash scores and
-adds the seed/sample identity. PAE, PDE, and per-token pLDDT remain separate NPZ files.
+adds the seed/sample identity. PAE, PDE, and per-token pLDDT remain separate,
+DEFLATE-compressed NPZ files.
 There are no rank names, rank CSV, best-model copy, trunk directory, or persistent
 native `pred.model_idx_*`/`scores.model_idx_*` files.
 

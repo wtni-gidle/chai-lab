@@ -50,12 +50,34 @@ def _publish_seed_in_process(root_text: str, seed: int) -> None:
     outputs.get_scores = fake_scores
     outputs.publish_structure_candidates(
         candidates,
-        predictions_dir=root / "predictions",
+        predictions_dir=root,
         seed=seed,
     )
 
 
 class PreparedOutputTest(unittest.TestCase):
+    def test_npz_is_deflated_and_lossless(self):
+        from zipfile import ZIP_DEFLATED, ZipFile
+
+        from chai_lab.data.io.prepared_outputs import _atomic_npz
+
+        with tempfile.TemporaryDirectory() as temporary:
+            for dtype in (np.float16, np.float32, np.float64):
+                value = np.arange(9, dtype=dtype).reshape(3, 3)
+                path = Path(temporary) / "pae.npz"
+                _atomic_npz(path, "pae", value)
+                with ZipFile(path) as archive:
+                    self.assertEqual(archive.namelist(), ["pae.npy"])
+                    self.assertTrue(
+                        all(
+                            item.compress_type == ZIP_DEFLATED
+                            for item in archive.infolist()
+                        )
+                    )
+                with np.load(path, allow_pickle=False) as archive:
+                    self.assertEqual(archive["pae"].dtype, value.dtype)
+                    np.testing.assert_array_equal(archive["pae"], value)
+
     def test_native_candidates_are_published_per_seed_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -128,6 +150,26 @@ class PreparedOutputTest(unittest.TestCase):
         with self.assertRaisesRegex(PreparedOutputError, "positive"):
             expected_seed_samples("predictions", seed=9, sample_count=0)
 
+    def test_legacy_paths_do_not_complete_new_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary) / "job"
+            old = expected_seed_samples(
+                job / "predictions", seed=7, sample_count=1
+            )[0]
+            paths = (
+                old.model_path,
+                old.summary_path,
+                old.pae_path,
+                old.pde_path,
+                old.plddt_path,
+            )
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"legacy")
+
+            self.assertFalse(seed_outputs_complete(job, seed=7, sample_count=1))
+            self.assertTrue(all(path.read_bytes() == b"legacy" for path in paths))
+
     def test_inconsistent_native_candidates_are_rejected(self):
         candidates = SimpleNamespace(
             cif_paths=[],
@@ -159,11 +201,11 @@ class PreparedOutputTest(unittest.TestCase):
             for seed in range(10, 16):
                 self.assertTrue(
                     seed_outputs_complete(
-                        root / "predictions", seed=seed, sample_count=1
+                        root, seed=seed, sample_count=1
                     )
                 )
-            self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
-            self.assertFalse((root / "predictions" / "msa_depth.pdf").exists())
+            self.assertEqual(list(root.rglob("*.tmp")), [])
+            self.assertFalse((root / "msa_depth.pdf").exists())
 
 
 if __name__ == "__main__":

@@ -90,7 +90,7 @@ def build_workflow_plan(
         name=name,
         job_dir=job_dir,
         prepared_path=manifest,
-        predictions_dir=job_dir / "predictions",
+        predictions_dir=job_dir,
         run_data_pipeline=run_data_pipeline,
         run_inference=run_inference,
         prepared_input=prepared,
