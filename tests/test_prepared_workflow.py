@@ -4,6 +4,7 @@
 
 import inspect
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -211,6 +212,79 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                 ],
             )
             self.assertNotEqual(private_msa, build_msa.call_args.args[1])
+
+    def test_separate_stages_survive_manifest_rename_and_cwd_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "input" / "request.json"
+            source.parent.mkdir()
+            manifest = _minimal_manifest()
+            manifest["sequences"][0]["protein"].update(
+                {
+                    "pairedMsa": ">q\nGGGG\n",
+                    "unpairedMsa": ">q\nGGGG\n",
+                }
+            )
+            source.write_text(json.dumps(manifest), encoding="utf-8")
+            source_bytes = source.read_bytes()
+            data_root = root / "prepared"
+
+            prepared_result = run_prepared_workflow(
+                source,
+                data_root,
+                run_data_pipeline=True,
+                run_inference=False,
+                use_msa_server=False,
+            )
+            renamed = prepared_result.prepared_path.with_name("renamed.json")
+            prepared_result.prepared_path.rename(renamed)
+            other_cwd = root / "elsewhere"
+            other_cwd.mkdir()
+
+            def fake_publish(candidates, predictions_dir, seed):
+                return (
+                    SimpleNamespace(
+                        model_path=Path(predictions_dir)
+                        / "models"
+                        / f"seed-{seed}_sample-0_model.cif"
+                    ),
+                )
+
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(other_cwd)
+                with (
+                    patch(
+                        "chai_lab.workflow.make_prepared_feature_context",
+                        return_value=object(),
+                    ),
+                    patch("chai_lab.workflow._run_folding", return_value=object()),
+                    patch(
+                        "chai_lab.data.io.prepared_outputs.publish_structure_candidates",
+                        side_effect=fake_publish,
+                    ),
+                ):
+                    inferred = run_prepared_workflow(
+                        renamed,
+                        root / "predictions",
+                        run_data_pipeline=False,
+                        run_inference=True,
+                        seeds=7,
+                        num_diffn_samples=1,
+                        device="cpu",
+                        use_esm_embeddings=False,
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(inferred.prepared_path, renamed.resolve())
+            self.assertEqual(
+                inferred.prediction_paths,
+                (
+                    (root / "predictions/seq/models/seed-7_sample-0_model.cif").resolve(),
+                ),
+            )
+            self.assertEqual(source.read_bytes(), source_bytes)
 
     def test_skip_avoids_feature_and_model_work_for_complete_seeds(self):
         with tempfile.TemporaryDirectory() as temporary:

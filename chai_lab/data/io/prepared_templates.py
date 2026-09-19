@@ -32,6 +32,48 @@ NativeTemplateParser = Callable[
 ]
 
 
+def _validate_resource_names(resource_names: Sequence[str]) -> None:
+    """Reject output names that alias on a case-insensitive filesystem."""
+    seen: dict[str, str] = {}
+    for name in resource_names:
+        folded = name.casefold()
+        previous = seen.get(folded)
+        if previous is not None:
+            raise ValueError(
+                "Prepared resource names collide on a case-insensitive filesystem: "
+                f"{previous!r} and {name!r}"
+            )
+        seen[folded] = name
+
+
+def _validate_resource_names_against_directory(
+    resource_names: Sequence[str], directory: Path
+) -> None:
+    """Reject case-only aliases of resources already present in a bundle."""
+    if not directory.is_dir():
+        return
+    for name in resource_names:
+        for path in directory.iterdir():
+            if path.name.casefold() == name.casefold() and path.name != name:
+                raise ValueError(
+                    "Prepared resource names collide on a case-insensitive "
+                    f"filesystem: {path.name!r} and {name!r}"
+                )
+
+
+def _template_resource_names(
+    *,
+    entity: PreparedEntity,
+    templates: Sequence[PreparedTemplate],
+    target_name: str,
+) -> tuple[str, ...]:
+    first_id = entity.ids[0]
+    return tuple(
+        f"{target_name}__{first_id}_template_{index}.cif.zst"
+        for index in range(len(templates))
+    )
+
+
 def parse_max_template_date(value: str | date) -> date:
     """Normalize an ISO template cutoff while keeping it outside prepared JSON."""
     if isinstance(value, date):
@@ -218,10 +260,16 @@ def materialize_template_structures(
     output_manifest: Path,
 ) -> tuple[PreparedTemplate, ...]:
     """Externalize template mmCIFs beside MSAs and return manifest-relative paths."""
-    first_id = entity.ids[0]
     msa_directory = output_manifest.parent / "msas"
-    materialized: list[PreparedTemplate] = []
-    for template_index, template in enumerate(templates):
+    resource_names = _template_resource_names(
+        entity=entity,
+        templates=templates,
+        target_name=target_name,
+    )
+    _validate_resource_names(resource_names)
+    _validate_resource_names_against_directory(resource_names, msa_directory)
+    template_contents: list[str] = []
+    for template in templates:
         mmcif = (
             template.mmcif
             if template.mmcif_path is None
@@ -229,9 +277,17 @@ def materialize_template_structures(
         )
         if not mmcif:
             raise PreparedTemplateError("Template mmCIF content must not be empty")
+        template_contents.append(mmcif)
+
+    materialized: list[PreparedTemplate] = []
+    for template, mmcif, resource_name in zip(
+        templates,
+        template_contents,
+        resource_names,
+        strict=True,
+    ):
         output_path = write_zstd_text(
-            msa_directory
-            / f"{target_name}__{first_id}_template_{template_index}.cif.zst",
+            msa_directory / resource_name,
             mmcif,
         )
         materialized.append(

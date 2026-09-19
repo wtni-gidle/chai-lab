@@ -25,6 +25,9 @@ from chai_lab.data.io.prepared_input import (
 from chai_lab.data.io.prepared_templates import (
     DEFAULT_MAX_TEMPLATE_DATE,
     NativeTemplateParser,
+    _template_resource_names,
+    _validate_resource_names,
+    _validate_resource_names_against_directory,
     materialize_template_structures,
     parse_max_template_date,
     parse_native_template_hits,
@@ -162,8 +165,10 @@ def prepare_data_bundle(
                     )
                 cursor += len(entity.ids)
 
-    msa_dir = output_manifest.parent / "msas"
-    rewritten_proteins: dict[int, PreparedEntity] = {}
+    staged_proteins: list[
+        tuple[PreparedEntity, str | None, str | None, tuple[PreparedTemplate, ...]]
+    ] = []
+    resource_names: list[str] = []
     for index, (entity, query, searched) in enumerate(
         zip(protein_entities, query_sequences, searched_by_entity, strict=True)
     ):
@@ -192,6 +197,36 @@ def prepare_data_bundle(
                 unpaired_fallback_source=entity.unpaired_msa_fallback_source,
             )
 
+        if paired_text:
+            resource_names.append(
+                f"{prepared.name}__{entity.ids[0]}_pairedmsa.a3m.zst"
+            )
+        if unpaired_text:
+            resource_names.append(
+                f"{prepared.name}__{entity.ids[0]}_unpairedmsa.a3m.zst"
+            )
+
+        templates = entity.templates
+        if templates is None:
+            templates = searched_templates_by_entity[index] or ()
+        templates = tuple(templates)
+        resource_names.extend(
+            _template_resource_names(
+                entity=entity,
+                templates=templates,
+                target_name=prepared.name,
+            )
+        )
+        staged_proteins.append((entity, paired_text, unpaired_text, templates))
+
+    _validate_resource_names(resource_names)
+
+    msa_dir = output_manifest.parent / "msas"
+    _validate_resource_names_against_directory(resource_names, msa_dir)
+    rewritten_proteins: dict[int, PreparedEntity] = {}
+    for index, (entity, paired_text, unpaired_text, templates) in enumerate(
+        staged_proteins
+    ):
         first_id = entity.ids[0]
         paired_content = paired_text
         paired_path = None
@@ -213,9 +248,6 @@ def prepare_data_bundle(
             unpaired_path = _relative_path(unpaired_absolute, output_manifest)
             unpaired_content = None
 
-        templates = entity.templates
-        if templates is None:
-            templates = searched_templates_by_entity[index] or ()
         templates = materialize_template_structures(
             entity=entity,
             templates=templates,

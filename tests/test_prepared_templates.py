@@ -11,13 +11,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from chai_lab.data.io.compression import read_text_auto, write_zstd_text
-from chai_lab.data.io.prepared_input import PreparedTemplate
+from chai_lab.data.io.prepared_input import PreparedEntity, PreparedTemplate
 from chai_lab.data.io.prepared_msas import prepare_data_bundle
 from chai_lab.data.io.prepared_templates import (
     _as_loaded_template,
     _load_template_structure_context,
     _matches_native_template_features,
     _single_chain_mmcif,
+    materialize_template_structures,
     parse_max_template_date,
     prepared_template_from_loaded,
 )
@@ -188,6 +189,76 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             prepare_data_bundle(request, output, use_msa_server=False)
             protein = json.loads(output.read_text())["sequences"][0]["protein"]
             self.assertEqual(protein["templates"], [])
+
+    def test_case_insensitive_resource_collision_fails_before_any_template_is_written(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = {
+                "version": 1,
+                "name": "seq",
+                "sequences": [
+                    {
+                        "protein": {
+                            "id": [entity_id],
+                            "sequence": sequence,
+                            "pairedMsa": "",
+                            "unpairedMsa": "",
+                            "templates": [
+                                {
+                                    "mmcif": mmcif,
+                                    "queryIndices": [0],
+                                    "templateIndices": [0],
+                                }
+                            ],
+                        }
+                    }
+                    for entity_id, sequence, mmcif in (
+                        ("A", "AAAA", MMCIF_A),
+                        ("a", "CCCC", MMCIF_B),
+                    )
+                ],
+            }
+            request = _write_request(root, manifest)
+            output = root / "result/seq/seq_data.json"
+
+            with self.assertRaisesRegex(ValueError, "case-insensitive"):
+                prepare_data_bundle(request, output, use_msa_server=False)
+
+            self.assertFalse(output.parent.exists())
+
+    def test_standalone_materializer_rejects_case_alias_of_existing_resource(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "seq_data.json"
+            template = PreparedTemplate(
+                mmcif=MMCIF_A,
+                mmcif_path=None,
+                query_indices=(0,),
+                template_indices=(0,),
+            )
+            uppercase = PreparedEntity(kind="protein", ids=("A",), sequence="AAAA")
+            lowercase = PreparedEntity(kind="protein", ids=("a",), sequence="CCCC")
+            materialize_template_structures(
+                entity=uppercase,
+                templates=(template,),
+                target_name="seq",
+                output_manifest=output,
+            )
+
+            with self.assertRaisesRegex(ValueError, "case-insensitive"):
+                materialize_template_structures(
+                    entity=lowercase,
+                    templates=(template,),
+                    target_name="seq",
+                    output_manifest=output,
+                )
+
+            self.assertEqual(
+                sorted(path.name for path in (root / "msas").iterdir()),
+                ["seq__A_template_0.cif.zst"],
+            )
 
     def test_template_query_ids_follow_unique_entities_not_expanded_homomer_chains(
         self,

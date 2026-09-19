@@ -404,6 +404,42 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                 protein["unpairedMsaPath"], "msas/seq__A_unpairedmsa.a3m.zst"
             )
 
+    def test_case_insensitive_resource_collision_fails_before_any_msa_is_written(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "request.json"
+            input_path.write_text(
+                json.dumps(
+                    _manifest(
+                        [
+                            {
+                                "id": ["A"],
+                                "sequence": "AAAA",
+                                "pairedMsa": PAIRED,
+                                "unpairedMsa": UNPAIRED,
+                            },
+                            {
+                                "id": ["a"],
+                                "sequence": "CCCC",
+                                "pairedMsa": PAIRED_C,
+                                "unpairedMsa": UNPAIRED_C,
+                            },
+                        ]
+                    )
+                ),
+                encoding="utf-8",
+            )
+            output_manifest = root / "result" / "seq" / "seq_data.json"
+
+            with self.assertRaisesRegex(ValueError, "case-insensitive"):
+                prepare_msa_bundle(
+                    input_path,
+                    output_manifest,
+                    use_msa_server=False,
+                )
+
+            self.assertFalse(output_manifest.parent.exists())
+
     def test_normalized_query_collision_cannot_silently_overwrite_parquet(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
