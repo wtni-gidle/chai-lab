@@ -75,7 +75,7 @@ def prepare_data_bundle(
     use_msa_server: bool,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
-    max_template_date: str | date = DEFAULT_MAX_TEMPLATE_DATE,
+    max_template_date: str | date | None = DEFAULT_MAX_TEMPLATE_DATE,
     searcher: MSASearcher | None = None,
     template_parser: NativeTemplateParser | None = None,
 ) -> PreparedInput:

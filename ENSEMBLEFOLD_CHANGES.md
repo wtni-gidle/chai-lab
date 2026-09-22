@@ -11,11 +11,33 @@ The detailed Chinese design and operating notes are maintained in
 
 ## Current wrapper contract at a glance
 
+### 2026-09-21: independent prepared-bundle publication
+
+`write_input_json: bool | None` is independent of data/inference execution. Omitted
+means the same as `run_data_pipeline`, preserving existing defaults. The CLI accepts
+`-J`, `--write-input-json`, and `--write_input_json`; the shell wrapper accepts `-J`.
+When true, JSON and relative `msas/...` resources are updated even if already present
+or all seeds skip. With data disabled this serializes existing conditions only and
+cannot activate MSA/template searches. When false, public input artifacts are not
+written: data preparation uses a private bundle kept alive through inference and
+cleaned on return or error. Internal native Parquet reconstruction remains private.
+Prediction outputs are unaffected by this publication switch.
+
+`WorkflowResult.prepared_path` is the public JSON when published, the source JSON
+for inference-only without publication, and `None` for private data preparation.
+No deleted temporary path is returned. Native MSA/template semantics and seed-level
+nonempty-file skip rules are unchanged. This update is uncommitted and has not been
+deployed to production; verification is recorded in the project audit documents.
+On stat, the 24 new tests passed, followed by the full offline suite: 120 tests
+and 10 subtests passed (jobs 90518 and 90520). The two online ColabFold tests were
+excluded. Native input/feature processing is exercised, but no GPU model inference
+or official-baseline numerical-equivalence claim is made for this update.
+
 The implemented workflow is:
 
 ```text
 self-contained JSON
-  -> <output>/<name>/<name>_data.json + editable A3M/template resources
+  -> public <output>/<name>/<name>_data.json + resources, or private temporary bundle
   -> process-private reconstruction of native Chai inputs
   -> one native trunk run per requested seed
   -> atomic seed/sample prediction files
@@ -28,15 +50,21 @@ native M8/RCSB/Kalign parsing as mmCIF plus residue mappings. Inference reconstr
 hash-named `.aligned.pqt` files in a private temporary directory and still uses the
 native MSA, template, ESM, restraint, feature, trunk, diffusion, and confidence code.
 
-Template-server preparation accepts `--max-template-date YYYY-MM-DD` and defaults to
-`2099-01-01`, preserving the practical upstream behavior of having no date cutoff.
-For each M8 candidate, the earliest
+Template-server preparation accepts optional `--max-template-date YYYY-MM-DD`.
+When omitted, no date filter runs, including for hits with unknown release dates.
+With an explicit cutoff, for each M8 candidate the earliest
 `_pdbx_audit_revision_history.revision_date` is read from the downloaded mmCIF. Hits
 released after the inclusive cutoff, or with no usable release date, are skipped
 before Kalign and before Chai's four-loaded-template limit, so later eligible hits can
 still fill the template set. Explicit templates already declared in JSON are not
 filtered. Neither the cutoff nor release dates are persisted in `_data.json`; callers
 that require an audit trail must retain the data-pipeline command or scheduler record.
+
+After native selection, per-template export/reconstruction failures are reported and
+the affected template is discarded, without replacing it with another native hit.
+Logs give the query ID, discarded hit ID and reason, then the retained hit IDs in
+`template_0`, `template_1`, ... output order (or explicitly none). Materialization
+also logs the target, input chain IDs and final relative CIF paths.
 
 The wrapper exposes one plural `--seeds` option, with one trunk execution and five
 diffusion samples per seed by default. The upstream `num_trunk_samples` execution
@@ -108,6 +136,29 @@ is written as
 `msas/<target>__<first-entity-id>_template_<index>.cif.zst`. Missing/null templates mean
 "search if enabled" on input, while an empty list means explicitly no templates. Output
 is always a list, possibly empty.
+
+The public indices now use the AF3 convention: `queryIndices` are zero-based query
+positions and `templateIndices` are zero-based positions in the **full mmCIF polymer
+sequence**, not author residue numbers or positions in Chai's filtered context.
+The saved single-chain CIF preserves that full sequence. During inference the
+wrapper records the original residue positions retained by Chai's native centre-atom
+filter, then translates the public mapping to filtered internal indices. Native
+template search exports the inverse translation. No new alignment is performed and
+Chai's native filtering/feature code is unchanged.
+
+For a template with full sequence `ACDGE` and coordinates only for `ACDE`, the public
+template indices for those four residues are `[0, 1, 2, 4]`; internally Chai uses
+`[0, 1, 2, 3]`. Explicit mappings to residues removed by the native filter are dropped
+with a warning listing the removed and retained mappings. If none remain, the
+template is discarded and the retained template slots are reported. Out-of-range
+indices remain errors, not silent discards. Input files are not rewritten by this
+runtime conversion.
+
+**Contract change (2026-09-22):** older Chai prepared files used filtered-context
+template indices. Regenerate their templates from the original input/search; do not
+reuse the old mappings under the new reader. There is no heuristic compatibility
+or automatic migration: both conventions can contain the same valid integers but
+refer to different residues. The JSON field names and top-level version are unchanged.
 
 `get_prepared_template_context()` reads those structures and mappings, applies Chai's
 native protein extraction, tokenization, unresolved-residue filtering, and

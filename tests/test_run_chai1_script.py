@@ -100,8 +100,6 @@ class RunChai1ScriptTest(unittest.TestCase):
                     "false",
                     "--use-templates-server",
                     "true",
-                    "--max-template-date",
-                    "2099-01-01",
                     "--use-esm-embeddings",
                     "false",
                     "--fasta-names-as-cif-chains",
@@ -114,6 +112,23 @@ class RunChai1ScriptTest(unittest.TestCase):
                     str(constraint),
                 ],
             )
+
+            # An explicit cutoff must still reach the CLI, without introducing
+            # any cutoff when -m is absent in the invocation above.
+            completed = subprocess.run(
+                [
+                    str(repository / "run_chai1.sh"), "-i", str(request),
+                    "-o", str(root / "result"), "-m", "2021-09-30",
+                ],
+                cwd=repository,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            args = capture_args.read_text().splitlines()
+            self.assertEqual(args[args.index("--max-template-date") + 1], "2021-09-30")
 
 
 if __name__ == "__main__":

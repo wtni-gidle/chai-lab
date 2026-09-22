@@ -156,7 +156,7 @@ def _resolve_path(path: Path, manifest_path: Path) -> Path:
 
 @dataclass(frozen=True)
 class PreparedTemplate:
-    """One AF3-style template structure and its Chai-derived residue mapping."""
+    """One template with zero-based query and full-polymer sequence positions."""
 
     mmcif: str | None
     mmcif_path: Path | None

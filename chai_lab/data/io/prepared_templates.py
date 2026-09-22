@@ -25,10 +25,10 @@ class PreparedTemplateError(ValueError):
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_MAX_TEMPLATE_DATE = date(2099, 1, 1)
+DEFAULT_MAX_TEMPLATE_DATE = None
 
 NativeTemplateParser = Callable[
-    [str, str, Path, Path, date], Sequence[PreparedTemplate]
+    [str, str, Path, Path, date | None], Sequence[PreparedTemplate]
 ]
 
 
@@ -74,9 +74,9 @@ def _template_resource_names(
     )
 
 
-def parse_max_template_date(value: str | date) -> date:
+def parse_max_template_date(value: str | date | None) -> date | None:
     """Normalize an ISO template cutoff while keeping it outside prepared JSON."""
-    if isinstance(value, date):
+    if value is None or isinstance(value, date):
         return value
     try:
         return date.fromisoformat(value)
@@ -125,9 +125,9 @@ def _single_chain_mmcif(cif_path: Path, chain_id: str) -> str:
         raise PreparedTemplateError(
             f"Expected one entity after extracting template chain {chain_id!r}"
         )
-    # Template-hit indices use the source entity's full polymer sequence. Keep that
-    # sequence, including unresolved residues, instead of replacing it with only the
-    # coordinate-bearing residues copied above.
+    # Preserve the full polymer sequence in the CIF, including unresolved residues.
+    # Public indices refer to this full sequence. Only the runtime adapter converts
+    # them to positions in Chai's unresolved-filtered context.
     structure.entities[0].full_sequence = source_full_sequence
     structure.assign_subchains()
     structure.assign_label_seq_id()
@@ -144,6 +144,8 @@ def _matches_native_template_features(native_loaded, prepared: PreparedTemplate)
             query_id=native_loaded.query_identifier,
             query_token_count=int(native_loaded.query_crop_indices.shape[0]),
         )
+        if rebuilt is None:
+            return False
         exact_fields = (
             "template_restype",
             "template_pseudo_beta_mask",
@@ -155,6 +157,11 @@ def _matches_native_template_features(native_loaded, prepared: PreparedTemplate)
         )
         for field in exact_fields:
             if not torch.equal(getattr(native_loaded, field), getattr(rebuilt, field)):
+                logger.warning(
+                    "Template %s round-trip mismatch in %s",
+                    native_loaded.hit_identifier,
+                    field,
+                )
                 return False
         for field in float_fields:
             if not torch.allclose(
@@ -164,6 +171,11 @@ def _matches_native_template_features(native_loaded, prepared: PreparedTemplate)
                 atol=1e-5,
                 equal_nan=True,
             ):
+                logger.warning(
+                    "Template %s round-trip mismatch in %s (rtol=1e-5, atol=1e-5)",
+                    native_loaded.hit_identifier,
+                    field,
+                )
                 return False
     except (IndexError, PreparedTemplateError, RuntimeError, ValueError):
         logger.warning(
@@ -177,15 +189,19 @@ def _matches_native_template_features(native_loaded, prepared: PreparedTemplate)
 
 
 def prepared_template_from_loaded(loaded_template, mmcif: str) -> PreparedTemplate:
-    """Serialize the final native LoadedTemplate mapping in AF3-style form."""
+    """Translate a native filtered-context mapping to full polymer positions."""
     hit = loaded_template.template_hit
     valid = hit.hit_valid_mask
     query_indices = tuple(
         int(index)
         for index in loaded_template.template_query_match_indices[valid].tolist()
     )
+    # index_select() preserves token_residue_index from the unfiltered structure:
+    # these are zero-based label_seq positions, not author residue numbers.
+    full_positions = loaded_template.template_hit_structure_context.token_residue_index
     template_indices = tuple(
-        int(index) for index in loaded_template.template_hit_indices[valid].tolist()
+        int(index)
+        for index in full_positions[loaded_template.template_hit_indices[valid]].tolist()
     )
     if not query_indices:
         raise PreparedTemplateError("Native template has no mapped residues")
@@ -202,7 +218,7 @@ def parse_native_template_hits(
     query_sequence: str,
     m8_path: Path,
     cif_cache_directory: Path,
-    max_template_date: date = DEFAULT_MAX_TEMPLATE_DATE,
+    max_template_date: date | None = DEFAULT_MAX_TEMPLATE_DATE,
 ) -> tuple[PreparedTemplate, ...]:
     """Run Chai's native M8/Kalign/structure filtering, then retain final mappings."""
     import torch
@@ -231,24 +247,51 @@ def parse_native_template_hits(
     )
 
     prepared_templates: list[PreparedTemplate] = []
+    retained_hits: list[str] = []
+    discarded_hits: list[str] = []
     for template in loaded:
         hit = template.template_hit
-        if hit.cif_path is None:
-            raise PreparedTemplateError(
-                "Native template parsing did not retain a local CIF path"
+        try:
+            if hit.cif_path is None:
+                raise PreparedTemplateError(
+                    "Native template parsing did not retain a local CIF path"
+                )
+            prepared = prepared_template_from_loaded(
+                template,
+                _single_chain_mmcif(hit.cif_path, hit.chain_id),
             )
-        prepared = prepared_template_from_loaded(
-            template,
-            _single_chain_mmcif(hit.cif_path, hit.chain_id),
-        )
-        if not _matches_native_template_features(template, prepared):
+        except (ValueError, RuntimeError, IndexError, OSError) as error:
+            discarded_hits.append(template.hit_identifier)
             logger.warning(
-                "Skipping template %s because prepared-template round-trip "
-                "validation failed",
+                "[%s] Discarding template %s during single-chain export: %s: %s",
+                query_id,
+                template.hit_identifier,
+                type(error).__name__,
+                error,
+            )
+            continue
+        if not _matches_native_template_features(template, prepared):
+            discarded_hits.append(template.hit_identifier)
+            logger.warning(
+                "[%s] Discarding template %s because prepared-template round-trip "
+                "validation failed (see mismatch/error above)",
+                query_id,
                 template.hit_identifier,
             )
             continue
         prepared_templates.append(prepared)
+        retained_hits.append(template.hit_identifier)
+    logger.log(
+        logging.WARNING if discarded_hits else logging.INFO,
+        "[%s] Retained templates (%d/%d native-selected): %s; discarded: %s",
+        query_id,
+        len(retained_hits),
+        len(loaded),
+        ", ".join(
+            f"template_{index}={hit_id}" for index, hit_id in enumerate(retained_hits)
+        ) or "none",
+        ", ".join(discarded_hits) or "none",
+    )
     return tuple(prepared_templates)
 
 
@@ -297,10 +340,21 @@ def materialize_template_structures(
                 mmcif_path=output_path.relative_to(output_manifest.parent),
             )
         )
+    logger.info(
+        "[%s] Prepared templates for chains %s: %s",
+        target_name,
+        ", ".join(entity.ids),
+        ", ".join(str(template.mmcif_path) for template in materialized) or "none",
+    )
     return tuple(materialized)
 
 
 def _load_template_structure_context(mmcif: str):
+    """Return the native filtered context (also used by parity tests)."""
+    return _load_template_structure_context_with_indices(mmcif)[0]
+
+
+def _load_template_structure_context_with_indices(mmcif: str):
     """Apply the same protein extraction, tokenization, and unresolved filtering as Chai."""
     import gemmi
     import torch
@@ -341,13 +395,17 @@ def _load_template_structure_context(mmcif: str):
         token_exists_mask=context.token_exists_mask,
     )
     (resolved_indices,) = torch.where(mask)
-    return context.index_select(resolved_indices)
+    filtered = context.index_select(resolved_indices)
+    # Keep the native filter, and remember which full-sequence positions survived.
+    # Do not align sequences again: repeats and gaps must not change correspondence.
+    full_positions = tuple(int(index) for index in filtered.token_residue_index.tolist())
+    return filtered, full_positions, len(entities[0].full_sequence)
 
 
 def _as_loaded_template(
     template: PreparedTemplate, query_id: str, query_token_count: int
 ):
-    """Reconstruct Chai's LoadedTemplate boundary from an explicit residue mapping."""
+    """Convert full polymer indices to Chai indices; return None if all are unresolved."""
     import torch
 
     from chai_lab.data import residue_constants as rc
@@ -366,23 +424,44 @@ def _as_loaded_template(
     )
     if mmcif is None:
         raise PreparedTemplateError("Prepared template has no mmCIF content")
-    structure_context = _load_template_structure_context(mmcif)
+    structure_context, full_positions, full_length = (
+        _load_template_structure_context_with_indices(mmcif)
+    )
     if template.query_indices[-1] >= query_token_count:
         raise PreparedTemplateError(
             "Template queryIndices exceed the Chai query token count"
         )
     template_restype = structure_context.token_residue_type.squeeze(0)
-    if template.template_indices[-1] >= template_restype.shape[0]:
+    if template.template_indices[-1] >= full_length:
         raise PreparedTemplateError(
-            "Template templateIndices exceed the saved structure sequence"
+            "Template templateIndices exceed the full saved polymer sequence"
         )
 
+    full_to_filtered = {
+        full_index: filtered_index
+        for filtered_index, full_index in enumerate(full_positions)
+    }
+    pairs = tuple(zip(template.query_indices, template.template_indices, strict=True))
+    retained = tuple((q, t) for q, t in pairs if t in full_to_filtered)
+    discarded = tuple((q, t) for q, t in pairs if t not in full_to_filtered)
+    if discarded:
+        logger.warning(
+            "[%s] Discarding unresolved template mappings (query, full-template): %s; "
+            "retained mappings: %s",
+            query_id, discarded, retained or "none",
+        )
+    if not retained:
+        logger.warning("[%s] Discarding template: no resolved mapped residues remain", query_id)
+        return None
+    query_indices = tuple(q for q, _ in retained)
+    template_indices = tuple(full_to_filtered[t] for _, t in retained)
+
     gap = rc.residue_types_with_nucleotides_order["-"]
-    hit_tokens = torch.full((template.query_indices[-1] + 1,), gap, dtype=torch.int32)
+    hit_tokens = torch.full((query_indices[-1] + 1,), gap, dtype=torch.int32)
     deletion_matrix = torch.zeros_like(hit_tokens, dtype=torch.uint8)
     previous_template_index: int | None = None
     for query_index, template_index in zip(
-        template.query_indices, template.template_indices, strict=True
+        query_indices, template_indices, strict=True
     ):
         hit_tokens[query_index] = template_restype[template_index]
         if previous_template_index is not None:
@@ -403,8 +482,8 @@ def _as_loaded_template(
         index=0,
         pdb_id="prepared",
         chain_id="prepared",
-        hit_start=template.template_indices[0],
-        hit_end=template.template_indices[-1] + 1,
+        hit_start=template_indices[0],
+        hit_end=template_indices[-1] + 1,
         hit_tokens=hit_tokens,
         deletion_matrix=deletion_matrix,
         query_seq_realigned=query_seq_realigned,
@@ -444,14 +523,26 @@ def get_prepared_template_context(chains: list, prepared: PreparedInput):
                 raise PreparedTemplateError(
                     f"Protein {entity.ids[0]!r} has not completed template preparation"
                 )
-            loaded = [
-                _as_loaded_template(
+            loaded = []
+            retained_templates = []
+            discarded_templates = []
+            for index, template in enumerate(entity.templates):
+                candidate = _as_loaded_template(
                     template,
                     query_id=entity.ids[0],
                     query_token_count=structure_context.num_tokens,
                 )
-                for template in entity.templates
-            ]
+                if candidate is None:
+                    discarded_templates.append(f"template_{index}")
+                else:
+                    loaded.append(candidate)
+                    retained_templates.append(f"template_{index}")
+            if discarded_templates:
+                logger.warning(
+                    "[%s] Retained input templates: %s; discarded input templates: %s",
+                    entity.ids[0], ", ".join(retained_templates) or "none",
+                    ", ".join(discarded_templates),
+                )
         if loaded:
             context = TemplateContext.from_loaded_templates(
                 n_tokens=structure_context.num_tokens,

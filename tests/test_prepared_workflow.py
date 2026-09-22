@@ -330,25 +330,42 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
             root = Path(temporary)
             request = root / "seq_data.json"
             request.write_text(json.dumps(_minimal_manifest()), encoding="utf-8")
+            predictions = root / "result/seq"
+            complete_paths = []
+            for seed in (4, 5):
+                for sample in (0, 1):
+                    prefix = f"seed-{seed}_sample-{sample}"
+                    paths = [
+                        predictions / "models" / f"{prefix}_model.cif",
+                        predictions / "summary_confidences" / f"{prefix}_summary_confidences.json",
+                        *(predictions / "full_data" / f"{kind}_{prefix}.npz"
+                          for kind in ("pae", "pde", "plddt")),
+                    ]
+                    for path in paths:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"old condition result")
+                    if seed == 4:
+                        complete_paths.extend(paths)
+            (predictions / "full_data/pde_seed-5_sample-1.npz").write_bytes(b"")
+            changed = _minimal_manifest()
+            changed["sequences"][0]["protein"]["sequence"] = "AAAA"
+            request.write_text(json.dumps(changed), encoding="utf-8")
 
             def fake_build_private(prepared, path):
                 path.mkdir()
                 return path
 
             def fake_publish(candidates, predictions_dir, seed):
-                return (
+                return tuple(
                     SimpleNamespace(
                         model_path=Path(predictions_dir)
                         / "models"
-                        / f"seed-{seed}_sample-0_model.cif"
-                    ),
+                        / f"seed-{seed}_sample-{sample}_model.cif"
+                    )
+                    for sample in range(2)
                 )
 
             with (
-                patch(
-                    "chai_lab.data.io.prepared_outputs.seed_outputs_complete",
-                    side_effect=lambda predictions_dir, seed, sample_count: seed == 4,
-                ),
                 patch(
                     "chai_lab.data.io.prepared_msas.build_private_msa_directory",
                     side_effect=fake_build_private,
@@ -369,7 +386,8 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                     run_data_pipeline=False,
                     run_inference=True,
                     seeds="4,5",
-                    num_diffn_samples=1,
+                    num_diffn_samples=2,
+                    num_trunk_recycles=9,
                     device="cpu",
                     skip=True,
                 )
@@ -378,6 +396,8 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
             make_context.assert_called_once()
             fold.assert_called_once()
             self.assertEqual(fold.call_args.kwargs["seed"], 5)
+            self.assertEqual(fold.call_args.kwargs["num_diffn_samples"], 2)
+            self.assertTrue(all(path.read_bytes() == b"old condition result" for path in complete_paths))
 
 
 if __name__ == "__main__":

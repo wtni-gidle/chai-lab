@@ -56,6 +56,34 @@ def _publish_seed_in_process(root_text: str, seed: int) -> None:
 
 
 class PreparedOutputTest(unittest.TestCase):
+    def test_resume_checks_only_file_metadata_for_every_required_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = []
+            for sample in (0, 1):
+                prefix = f"seed-7_sample-{sample}"
+                paths.extend([
+                    root / "models" / f"{prefix}_model.cif",
+                    root / "summary_confidences" / f"{prefix}_summary_confidences.json",
+                    *(root / "full_data" / f"{kind}_{prefix}.npz"
+                      for kind in ("pae", "pde", "plddt")),
+                ])
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"not a valid CIF, JSON or NPZ")
+            with patch.object(Path, "open", side_effect=AssertionError("no content reads")):
+                self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=2))
+            for path in paths:
+                with self.subTest(path=path.name):
+                    path.write_bytes(b"")
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    path.unlink()
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    path.mkdir()
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    path.rmdir()
+                    path.write_bytes(b"nonempty")
+
     def test_npz_is_deflated_and_lossless(self):
         from zipfile import ZIP_DEFLATED, ZipFile
 

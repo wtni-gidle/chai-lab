@@ -20,6 +20,7 @@ from chai_lab.data.io.prepared_templates import (
     _single_chain_mmcif,
     materialize_template_structures,
     parse_max_template_date,
+    parse_native_template_hits,
     prepared_template_from_loaded,
 )
 from chai_lab.data.parsing.templates.m8 import (
@@ -61,6 +62,30 @@ def _write_request(root: Path, manifest: dict) -> Path:
 
 
 class PreparedTemplateWorkflowTest(unittest.TestCase):
+    def test_data_default_leaves_template_cutoff_unset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = _write_request(root, _manifest())
+
+            def searcher(queries, work_dir, url, search_templates):
+                m8 = work_dir / "hits.m8"
+                m8.write_text("", encoding="utf-8")
+                return [
+                    SimpleNamespace(paired=PAIRED, unpaired=UNPAIRED) for _ in queries
+                ], m8
+
+            def parser(query_id, query, m8, cache, cutoff):
+                self.assertIsNone(cutoff)
+                return ()
+
+            output = root / "result/seq/seq_data.json"
+            prepare_data_bundle(
+                request, output, use_msa_server=False, use_templates_server=True,
+                searcher=searcher, template_parser=parser,
+            )
+            protein = json.loads(output.read_text())["sequences"][0]["protein"]
+            self.assertEqual(protein["templates"], [])
+
     def test_server_m8_is_ephemeral_and_final_mapping_is_af3_style(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -306,7 +331,139 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             self.assertEqual(observed_query_ids, ["101", "102"])
 
 
+class TemplateRetentionReportTest(unittest.TestCase):
+    def test_export_failure_and_mismatch_are_reported_with_retained_order(self):
+        loaded = [
+            SimpleNamespace(
+                hit_identifier=f"{pdb}|A",
+                template_hit=SimpleNamespace(cif_path=Path(f"{pdb}.cif"), chain_id="A"),
+            )
+            for pdb in ("1bad", "2bad", "3keep", "4keep")
+        ]
+        first = PreparedTemplate(
+            mmcif=MMCIF_A,
+            mmcif_path=None,
+            query_indices=(0,),
+            template_indices=(0,),
+        )
+        second = PreparedTemplate(
+            mmcif=MMCIF_B,
+            mmcif_path=None,
+            query_indices=(1,),
+            template_indices=(1,),
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch(
+                "chai_lab.data.parsing.templates.m8.parse_m8_to_template_hits",
+                return_value=iter(()),
+            ) as hits,
+            patch(
+                "chai_lab.data.dataset.templates.load.get_template_data",
+                return_value=loaded,
+            ),
+            patch("chai_lab.data.sources.rdkit.RefConformerGenerator"),
+            patch(
+                "chai_lab.data.dataset.structure.all_atom_residue_tokenizer.AllAtomResidueTokenizer"
+            ),
+            patch(
+                "chai_lab.data.io.prepared_templates._single_chain_mmcif",
+                side_effect=[ValueError("missing polymer sequence"), MMCIF_A, MMCIF_A, MMCIF_B],
+            ),
+            patch(
+                "chai_lab.data.io.prepared_templates.prepared_template_from_loaded",
+                side_effect=[first, first, second],
+            ),
+            patch(
+                "chai_lab.data.io.prepared_templates._matches_native_template_features",
+                side_effect=[False, True, True],
+            ),
+            self.assertLogs("chai_lab.data.io.prepared_templates", level="INFO") as logs,
+        ):
+            result = parse_native_template_hits(
+                "101", "AAAA", Path("hits.m8"), Path(temporary)
+            )
+        self.assertEqual(result, (first, second))
+        self.assertIsNone(hits.call_args.kwargs["max_template_date"])
+        output = "\n".join(logs.output)
+        for fragment in (
+            "101", "1bad|A", "missing polymer sequence", "2bad|A", "round-trip",
+            "template_0=3keep|A", "template_1=4keep|A", "2/4",
+        ):
+            self.assertIn(fragment, output)
+
+    def test_all_failed_templates_are_reported_as_none_retained(self):
+        loaded = SimpleNamespace(
+            hit_identifier="1bad|A",
+            template_hit=SimpleNamespace(cif_path=Path("1bad.cif"), chain_id="A"),
+        )
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch(
+                "chai_lab.data.parsing.templates.m8.parse_m8_to_template_hits",
+                return_value=iter(()),
+            ),
+            patch(
+                "chai_lab.data.dataset.templates.load.get_template_data",
+                return_value=[loaded],
+            ),
+            patch("chai_lab.data.sources.rdkit.RefConformerGenerator"),
+            patch(
+                "chai_lab.data.dataset.structure.all_atom_residue_tokenizer.AllAtomResidueTokenizer"
+            ),
+            patch(
+                "chai_lab.data.io.prepared_templates._single_chain_mmcif",
+                side_effect=ValueError("no polymer"),
+            ),
+            self.assertLogs("chai_lab.data.io.prepared_templates", level="WARNING") as logs,
+        ):
+            result = parse_native_template_hits(
+                "101", "AAAA", Path("hits.m8"), Path(temporary)
+            )
+        self.assertEqual(result, ())
+        self.assertIn("0/1", "\n".join(logs.output))
+        self.assertIn("none", "\n".join(logs.output).lower())
+
+
 class TemplateDateCutoffTest(unittest.TestCase):
+    def test_absent_cutoff_disables_filtering(self):
+        self.assertIsNone(parse_max_template_date(None))
+
+    def test_no_cutoff_keeps_hit_with_unknown_release_date(self):
+        from chai_lab.tools.kalign import KalignAlignment
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cif = root / "template.cif"
+            cif.write_text(
+                PreparedTemplateFeatureRoundTripTest._protein_mmcif(), encoding="utf-8"
+            )
+            m8 = root / "hits.m8"
+            m8.write_text(
+                "101\t1unk_A\t90\t4\t0\t0\t1\t4\t1\t4\t1e-10\t100\tunknown\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "chai_lab.data.parsing.templates.m8.download_cif_file",
+                    return_value=cif,
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.get_mmcif_release_date",
+                    side_effect=AssertionError("Date must not be read without a cutoff"),
+                ),
+                patch(
+                    "chai_lab.data.parsing.templates.m8.kalign_query_to_reference",
+                    return_value=KalignAlignment(reference_aligned="ACDE", query_aligned="ACDE"),
+                ),
+            ):
+                hits = list(
+                    parse_m8_to_template_hits(
+                        "101", "ACDE", m8, template_cif_folder=root, max_template_date=None
+                    )
+                )
+            self.assertEqual([(hit.pdb_id, hit.chain_id) for hit in hits], [("1unk", "A")])
+
     def test_release_date_is_the_earliest_revision(self):
         with tempfile.TemporaryDirectory() as temporary:
             cif_path = Path(temporary) / "template.cif"

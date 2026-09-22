@@ -9,6 +9,7 @@ import os
 import secrets
 import tempfile
 from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -33,10 +34,11 @@ class WorkflowPlan:
     output_dir: Path
     name: str
     job_dir: Path
-    prepared_path: Path
+    prepared_path: Path | None
     predictions_dir: Path
     run_data_pipeline: bool
     run_inference: bool
+    write_input_json: bool
     prepared_input: PreparedInput
 
 
@@ -44,7 +46,7 @@ class WorkflowPlan:
 class WorkflowResult:
     """Published resources and predictions from one wrapper invocation."""
 
-    prepared_path: Path
+    prepared_path: Path | None
     seeds: tuple[int, ...]
     prediction_paths: tuple[Path, ...]
 
@@ -55,6 +57,7 @@ def build_workflow_plan(
     *,
     run_data_pipeline: bool,
     run_inference: bool,
+    write_input_json: bool | None = None,
     validate_resources: bool = True,
 ) -> WorkflowPlan:
     """Validate an invocation and describe where its stages will read and write.
@@ -62,6 +65,9 @@ def build_workflow_plan(
     This planning API is side-effect free. ``run_prepared_workflow`` executes the
     returned locations and stage choices.
     """
+    if write_input_json is not None and type(write_input_json) is not bool:
+        raise ValueError("write_input_json must be a boolean or None")
+    publish = run_data_pipeline if write_input_json is None else write_input_json
     if not run_data_pipeline and not run_inference:
         raise ValueError(
             "At least one of run_data_pipeline or run_inference must be true."
@@ -81,7 +87,11 @@ def build_workflow_plan(
     if validate_resources:
         prepared = prepared.validate_resources(source)
     name = prepared.name
-    manifest = prepared_input_path(output_root, name) if run_data_pipeline else source
+    manifest = (
+        prepared_input_path(output_root, name)
+        if publish
+        else (None if run_data_pipeline else source)
+    )
 
     job_dir = output_root / name
     return WorkflowPlan(
@@ -93,6 +103,7 @@ def build_workflow_plan(
         predictions_dir=job_dir,
         run_data_pipeline=run_data_pipeline,
         run_inference=run_inference,
+        write_input_json=publish,
         prepared_input=prepared,
     )
 
@@ -267,10 +278,11 @@ def run_prepared_workflow(
     *,
     run_data_pipeline: bool = True,
     run_inference: bool = True,
+    write_input_json: bool | None = None,
     use_msa_server: bool = False,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
-    max_template_date: str | date = "2099-01-01",
+    max_template_date: str | date | None = None,
     seeds: str | int | Sequence[int] | None = None,
     recycle_msa_subsample: int = 0,
     num_trunk_recycles: int = 3,
@@ -296,122 +308,134 @@ def run_prepared_workflow(
         output_dir,
         run_data_pipeline=run_data_pipeline,
         run_inference=run_inference,
+        write_input_json=write_input_json,
     )
-    manifest_path = plan.input_path
-    if run_data_pipeline:
-        from chai_lab.data.io.prepared_msas import prepare_data_bundle
+    with ExitStack() as resources:
+        manifest_path = plan.input_path
+        if plan.run_data_pipeline or plan.write_input_json:
+            from chai_lab.data.io.prepared_msas import prepare_data_bundle
 
-        prepare_data_bundle(
-            plan.input_path,
-            plan.prepared_path,
-            use_msa_server=use_msa_server,
-            use_templates_server=use_templates_server,
-            msa_server_url=msa_server_url,
-            max_template_date=max_template_date,
+            if plan.write_input_json:
+                assert plan.prepared_path is not None
+                manifest_path = plan.prepared_path
+            else:
+                private = resources.enter_context(
+                    tempfile.TemporaryDirectory(
+                        prefix=f"chai_{plan.name}_data_", dir=_temporary_parent()
+                    )
+                )
+                manifest_path = Path(private) / f"{plan.name}_data.json"
+
+            prepare_data_bundle(
+                plan.input_path,
+                manifest_path,
+                use_msa_server=plan.run_data_pipeline and use_msa_server,
+                use_templates_server=plan.run_data_pipeline and use_templates_server,
+                msa_server_url=msa_server_url,
+                max_template_date=max_template_date if plan.run_data_pipeline else None,
+            )
+
+        if not run_inference:
+            return WorkflowResult(
+                prepared_path=plan.prepared_path,
+                seeds=(),
+                prediction_paths=(),
+            )
+
+        normalized_seeds = normalize_seeds(seeds)
+        logger.info("Running Chai-1 seeds: %s", ", ".join(map(str, normalized_seeds)))
+        from chai_lab.data.io.prepared_outputs import (
+            expected_seed_samples,
+            publish_structure_candidates,
+            seed_outputs_complete,
         )
-        manifest_path = plan.prepared_path
 
-    if not run_inference:
+        pending_seeds = tuple(
+            seed
+            for seed in normalized_seeds
+            if not skip
+            or not seed_outputs_complete(
+                plan.predictions_dir,
+                seed=seed,
+                sample_count=num_diffn_samples,
+            )
+        )
+        skipped_seeds = tuple(
+            seed for seed in normalized_seeds if seed not in pending_seeds
+        )
+        if skipped_seeds:
+            logger.info("Skipping complete seeds: %s", ", ".join(map(str, skipped_seeds)))
+        expected_model_paths = tuple(
+            sample.model_path
+            for seed in normalized_seeds
+            for sample in expected_seed_samples(
+                plan.predictions_dir,
+                seed=seed,
+                sample_count=num_diffn_samples,
+            )
+        )
+        if not pending_seeds:
+            return WorkflowResult(
+                prepared_path=plan.prepared_path,
+                seeds=normalized_seeds,
+                prediction_paths=expected_model_paths,
+            )
+
+        prepared = load_prepared_input(manifest_path).validate_resources(manifest_path)
+        resolved_constraint_path = None
+        if constraint_path is not None:
+            resolved_constraint_path = Path(constraint_path).expanduser().resolve()
+            if not resolved_constraint_path.is_file():
+                raise FileNotFoundError(
+                    f"constraint_path does not exist or is not a file: "
+                    f"{resolved_constraint_path}"
+                )
+        torch_device = torch.device(device if device is not None else "cuda:0")
+
+        from chai_lab.data.io.prepared_msas import build_private_msa_directory
+
+        with tempfile.TemporaryDirectory(
+            prefix=f"chai_{plan.name}_", dir=_temporary_parent()
+        ) as temporary:
+            temporary_root = Path(temporary)
+            private_msa_directory = build_private_msa_directory(
+                prepared, temporary_root / "msas"
+            )
+            feature_context = make_prepared_feature_context(
+                prepared,
+                msa_directory=private_msa_directory,
+                esm_device=torch_device,
+                use_esm_embeddings=use_esm_embeddings,
+                constraint_path=resolved_constraint_path,
+                fasta_names_as_cif_chains=fasta_names_as_cif_chains,
+            )
+            for seed in pending_seeds:
+                logger.info("Running seed %d", seed)
+                candidates = _run_folding(
+                    feature_context,
+                    output_dir=temporary_root / f"seed-{seed}",
+                    recycle_msa_subsample=recycle_msa_subsample,
+                    num_trunk_recycles=num_trunk_recycles,
+                    num_diffn_timesteps=num_diffn_timesteps,
+                    num_diffn_samples=num_diffn_samples,
+                    entity_names_as_chain_names_in_output_cif=fasta_names_as_cif_chains,
+                    seed=seed,
+                    device=torch_device,
+                    low_memory=low_memory,
+                )
+                published = publish_structure_candidates(
+                    candidates,
+                    predictions_dir=plan.predictions_dir,
+                    seed=seed,
+                )
+                if len(published) != num_diffn_samples:
+                    raise ValueError(
+                        f"Seed {seed} published {len(published)} samples; "
+                        f"expected {num_diffn_samples}"
+                    )
+
         return WorkflowResult(
-            prepared_path=manifest_path,
-            seeds=(),
-            prediction_paths=(),
-        )
-
-    normalized_seeds = normalize_seeds(seeds)
-    logger.info("Running Chai-1 seeds: %s", ", ".join(map(str, normalized_seeds)))
-    from chai_lab.data.io.prepared_outputs import (
-        expected_seed_samples,
-        publish_structure_candidates,
-        seed_outputs_complete,
-    )
-
-    pending_seeds = tuple(
-        seed
-        for seed in normalized_seeds
-        if not skip
-        or not seed_outputs_complete(
-            plan.predictions_dir,
-            seed=seed,
-            sample_count=num_diffn_samples,
-        )
-    )
-    skipped_seeds = tuple(
-        seed for seed in normalized_seeds if seed not in pending_seeds
-    )
-    if skipped_seeds:
-        logger.info("Skipping complete seeds: %s", ", ".join(map(str, skipped_seeds)))
-    expected_model_paths = tuple(
-        sample.model_path
-        for seed in normalized_seeds
-        for sample in expected_seed_samples(
-            plan.predictions_dir,
-            seed=seed,
-            sample_count=num_diffn_samples,
-        )
-    )
-    if not pending_seeds:
-        return WorkflowResult(
-            prepared_path=manifest_path,
+            prepared_path=plan.prepared_path,
             seeds=normalized_seeds,
             prediction_paths=expected_model_paths,
         )
-
-    prepared = load_prepared_input(manifest_path).validate_resources(manifest_path)
-    resolved_constraint_path = None
-    if constraint_path is not None:
-        resolved_constraint_path = Path(constraint_path).expanduser().resolve()
-        if not resolved_constraint_path.is_file():
-            raise FileNotFoundError(
-                f"constraint_path does not exist or is not a file: "
-                f"{resolved_constraint_path}"
-            )
-    torch_device = torch.device(device if device is not None else "cuda:0")
-
-    from chai_lab.data.io.prepared_msas import build_private_msa_directory
-
-    with tempfile.TemporaryDirectory(
-        prefix=f"chai_{plan.name}_", dir=_temporary_parent()
-    ) as temporary:
-        temporary_root = Path(temporary)
-        private_msa_directory = build_private_msa_directory(
-            prepared, temporary_root / "msas"
-        )
-        feature_context = make_prepared_feature_context(
-            prepared,
-            msa_directory=private_msa_directory,
-            esm_device=torch_device,
-            use_esm_embeddings=use_esm_embeddings,
-            constraint_path=resolved_constraint_path,
-            fasta_names_as_cif_chains=fasta_names_as_cif_chains,
-        )
-        for seed in pending_seeds:
-            logger.info("Running seed %d", seed)
-            candidates = _run_folding(
-                feature_context,
-                output_dir=temporary_root / f"seed-{seed}",
-                recycle_msa_subsample=recycle_msa_subsample,
-                num_trunk_recycles=num_trunk_recycles,
-                num_diffn_timesteps=num_diffn_timesteps,
-                num_diffn_samples=num_diffn_samples,
-                entity_names_as_chain_names_in_output_cif=fasta_names_as_cif_chains,
-                seed=seed,
-                device=torch_device,
-                low_memory=low_memory,
-            )
-            published = publish_structure_candidates(
-                candidates,
-                predictions_dir=plan.predictions_dir,
-                seed=seed,
-            )
-            if len(published) != num_diffn_samples:
-                raise ValueError(
-                    f"Seed {seed} published {len(published)} samples; "
-                    f"expected {num_diffn_samples}"
-                )
-
-    return WorkflowResult(
-        prepared_path=manifest_path,
-        seeds=normalized_seeds,
-        prediction_paths=expected_model_paths,
-    )

@@ -54,6 +54,13 @@ def fold(
     run_model_inference: str = typer.Option(
         "true", "-P", "--run-inference", help="Run model inference."
     ),
+    write_input_json: str | None = typer.Option(
+        None,
+        "-J",
+        "--write-input-json",
+        "--write_input_json",
+        help="Write/update the public prepared bundle; omitted: same as -D.",
+    ),
     seeds: str | None = typer.Option(
         None, "-r", "--seeds", help="One seed or comma-separated seeds."
     ),
@@ -72,10 +79,10 @@ def fold(
     use_templates_server: str = typer.Option(
         "false", "-T", "--use-templates-server", help="Search missing templates."
     ),
-    max_template_date: str = typer.Option(
-        "2099-01-01",
+    max_template_date: str | None = typer.Option(
+        None,
         "--max-template-date",
-        help="Latest allowed searched-template release date (YYYY-MM-DD).",
+        help="Latest allowed searched-template release date (YYYY-MM-DD); omitted: no date filter.",
     ),
     msa_server_url: str = typer.Option("https://api.colabfold.com", "--msa-server-url"),
     recycle_msa_subsample: int = typer.Option(0, "--recycle-msa-subsample"),
@@ -109,6 +116,10 @@ def fold(
             output_dir,
             run_data_pipeline=_boolean_option(run_data_pipeline, "--run-data-pipeline"),
             run_inference=_boolean_option(run_model_inference, "--run-inference"),
+            write_input_json=(
+                None if write_input_json is None
+                else _boolean_option(write_input_json, "--write-input-json")
+            ),
             use_msa_server=_boolean_option(use_msa_server, "--use-msa-server"),
             use_templates_server=_boolean_option(
                 use_templates_server, "--use-templates-server"
@@ -134,7 +145,10 @@ def fold(
         )
     except (ValueError, FileNotFoundError) as error:
         raise typer.BadParameter(str(error)) from error
-    typer.echo(f"Prepared input: {result.prepared_path}")
+    if result.prepared_path is not None:
+        typer.echo(f"Prepared input: {result.prepared_path}")
+    else:
+        typer.echo("Input prepared privately; no public prepared bundle written.")
     if result.seeds:
         typer.echo(f"Seeds: {','.join(map(str, result.seeds))}")
         typer.echo(f"Published models: {len(result.prediction_paths)}")

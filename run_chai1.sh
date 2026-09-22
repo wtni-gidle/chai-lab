@@ -19,13 +19,14 @@ usage() {
     echo "-d <gpu_device>                 CUDA device ID, for example 0. (default: 0)"
     echo "-D <run_data_pipeline>          Run the data pipeline. (default: true)"
     echo "-P <run_inference>              Run model inference. (default: true)"
+    echo "-J <write_input_json>           Write/update prepared JSON and resources. (default: same as -D)"
     echo "-r <model_seeds>                One seed or comma-separated seeds, e.g. 1,2,3."
     echo "-n <diffusion_samples>          Number of samples per seed. (default: 5)"
     echo "-c <recycling_steps>            Number of trunk recycling steps. (default: 3)"
     echo "-p <sampling_steps>             Number of diffusion sampling steps. (default: 200)"
     echo "-M <use_msa_server>             Search missing protein MSAs. (default: true)"
     echo "-T <use_templates_server>       Search missing templates. (default: false)"
-    echo "-m <max_template_date>          Latest searched-template release date. (default: 2099-01-01)"
+    echo "-m <max_template_date>          Latest searched-template release date. (default: no date filter)"
     echo "-E <use_esm_embeddings>         Generate ESM embeddings in inference. (default: true)"
     echo "-x <constraint_path>            Optional native Chai restraint CSV."
     echo "-C <fasta_names_as_cif_chains> Use input IDs as CIF chain names. (default: false)"
@@ -42,13 +43,14 @@ usage() {
 }
 
 # region: Parse command line arguments
-while getopts "i:o:d:D:P:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
+while getopts "i:o:d:D:P:J:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
     case "${opt}" in
     i) input_path=$OPTARG ;;
     o) output_dir=$OPTARG ;;
     d) gpu_device=$OPTARG ;;
     D) run_data_pipeline=$OPTARG ;;
     P) run_inference=$OPTARG ;;
+    J) write_input_json=$OPTARG ;;
     r) model_seeds=$OPTARG ;;
     n) diffusion_samples=$OPTARG ;;
     c) recycling_steps=$OPTARG ;;
@@ -86,7 +88,6 @@ if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
 if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
 if [[ "$use_msa_server" == "" ]]; then use_msa_server="true"; fi
 if [[ "$use_templates_server" == "" ]]; then use_templates_server="false"; fi
-if [[ "$max_template_date" == "" ]]; then max_template_date="2099-01-01"; fi
 if [[ "$use_esm_embeddings" == "" ]]; then use_esm_embeddings="true"; fi
 if [[ "$fasta_names_as_cif_chains" == "" ]]; then fasta_names_as_cif_chains="false"; fi
 if [[ "$skip" == "" ]]; then skip="false"; fi
@@ -126,12 +127,17 @@ command_args=(
     --sampling-steps "$sampling_steps"
     --use-msa-server "$use_msa_server"
     --use-templates-server "$use_templates_server"
-    --max-template-date "$max_template_date"
     --use-esm-embeddings "$use_esm_embeddings"
     --fasta-names-as-cif-chains "$fasta_names_as_cif_chains"
     --skip "$skip"
 )
 
+if [[ "$max_template_date" != "" ]]; then
+    command_args+=(--max-template-date "$max_template_date")
+fi
+if [[ "$write_input_json" != "" ]]; then
+    command_args+=(--write-input-json "$write_input_json")
+fi
 if [[ "$model_seeds" != "" ]]; then
     command_args+=(--seeds "$model_seeds")
 fi

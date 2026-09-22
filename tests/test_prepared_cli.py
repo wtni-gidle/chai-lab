@@ -15,6 +15,22 @@ from chai_lab.workflow import WorkflowResult
 
 
 class PreparedCLITest(unittest.TestCase):
+    def test_cli_without_cutoff_does_not_enable_template_date_filter(self):
+        expected = WorkflowResult(
+            prepared_path=Path("unused.json"), seeds=(), prediction_paths=()
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            request = Path(temporary) / "seq.json"
+            request.write_text("{}", encoding="utf-8")
+            with patch(
+                "chai_lab.main.run_prepared_workflow", return_value=expected
+            ) as workflow:
+                result = CliRunner().invoke(
+                    build_app(), ["fold", str(request), temporary, "-P", "false"]
+                )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIsNone(workflow.call_args.kwargs["max_template_date"])
+
     def test_fold_help_exposes_wrapper_stages_and_plural_seeds(self):
         result = CliRunner().invoke(build_app(), ["fold", "--help"])
         self.assertEqual(result.exit_code, 0, result.output)
