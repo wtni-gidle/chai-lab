@@ -76,8 +76,8 @@ def test_publication_is_independent_and_updates_even_when_seed_skips(
     result = workflow.run_prepared_workflow(
         source, output, run_data_pipeline=data, run_inference=inference,
         write_input_json=write, seeds=7, num_diffn_samples=1, skip=True,
-    )
-    publish = data if write is None else write
+    compress_fold_input=True)
+    publish = True if write is None else write
     if publish:
         protein = json.loads(snapshot.read_text())["sequences"][0]["protein"]
         assert protein["unpairedMsaPath"] == "msas/job__A_unpairedmsa.a3m.zst"
@@ -130,9 +130,9 @@ def test_private_preparation_lives_through_real_features_and_is_cleaned(
                   seeds=7, num_diffn_samples=1)
     if failure:
         with pytest.raises(RuntimeError, match="model boundary failed"):
-            workflow.run_prepared_workflow(source, output, **kwargs)
+            workflow.run_prepared_workflow(source, output, **kwargs, compress_fold_input=True)
     else:
-        result = workflow.run_prepared_workflow(source, output, **kwargs)
+        result = workflow.run_prepared_workflow(source, output, **kwargs, compress_fold_input=True)
         assert result.prepared_path is None
         assert result.prediction_paths[0].is_file()
     assert seen == [True]
@@ -165,12 +165,12 @@ def test_same_path_unpaired_replacement_reaches_native_context_without_changing_
     monkeypatch.setattr(workflow, "_run_folding", fold)
     monkeypatch.setattr(prepared_outputs, "get_scores", lambda _: {})
     settings = dict(device="cpu", use_esm_embeddings=False, seeds=7, num_diffn_samples=1)
-    workflow.run_prepared_workflow(source, output, write_input_json=True, **settings)
+    workflow.run_prepared_workflow(source, output, write_input_json=True, **settings, compress_fold_input=True)
     before = {p: p.read_bytes() for p in (output / "job").rglob("*")
               if p.is_file() and p.parent.name not in {"models", "full_data", "summary_confidences"}}
     (tmp_path / "unpaired.a3m").write_text(REPLACEMENT)
     workflow.run_prepared_workflow(source, output, run_data_pipeline=data,
-                                  write_input_json=write, **settings)
+                                  write_input_json=write, **settings, compress_fold_input=True)
     assert "A-DE" in observed[0][0] and "ACD-" not in observed[0][0]
     assert "ACD-" in observed[1][0] and "A-DE" not in observed[1][0]
     assert "AC-E" in observed[0][0] & observed[1][0]
@@ -204,7 +204,7 @@ def test_inference_only_publication_cannot_enable_search(tmp_path, monkeypatch):
         source, output, run_data_pipeline=False, write_input_json=True,
         use_msa_server=True, use_templates_server=True, seeds=7, skip=True,
         num_diffn_samples=1,
-    )
+    compress_fold_input=True)
     assert (output / "job/job_data.json").is_file()
 
 
@@ -213,7 +213,7 @@ def test_non_boolean_write_rejected_before_output(tmp_path, value):
     source = request(tmp_path)
     with pytest.raises(ValueError, match="write_input_json"):
         workflow.run_prepared_workflow(source, tmp_path / "out", run_inference=False,
-                                      write_input_json=value)
+                                      write_input_json=value, compress_fold_input=True)
     assert not (tmp_path / "out").exists()
 
 

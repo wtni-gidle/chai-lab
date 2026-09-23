@@ -19,7 +19,9 @@ usage() {
     echo "-d <gpu_device>                 CUDA device ID, for example 0. (default: 0)"
     echo "-D <run_data_pipeline>          Run the data pipeline. (default: true)"
     echo "-P <run_inference>              Run model inference. (default: true)"
-    echo "-J <write_input_json>           Write/update prepared JSON and resources. (default: same as -D)"
+    echo "-J <write_input_json>           Write/update prepared JSON and resources. (default: true)"
+    echo "-z <compress_fold_input>        Write prepared resources as zstd. (default: false)"
+    echo "-f <compress_full_confidence>   Write detailed confidence as compressed NPZ. (default: false)"
     echo "-r <model_seeds>                One seed or comma-separated seeds, e.g. 1,2,3."
     echo "-n <diffusion_samples>          Number of samples per seed. (default: 5)"
     echo "-c <recycling_steps>            Number of trunk recycling steps. (default: 3)"
@@ -43,7 +45,7 @@ usage() {
 }
 
 # region: Parse command line arguments
-while getopts "i:o:d:D:P:J:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
+while getopts "i:o:d:D:P:J:z:f:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
     case "${opt}" in
     i) input_path=$OPTARG ;;
     o) output_dir=$OPTARG ;;
@@ -51,6 +53,8 @@ while getopts "i:o:d:D:P:J:r:n:c:p:M:T:m:E:x:C:S:h" opt; do
     D) run_data_pipeline=$OPTARG ;;
     P) run_inference=$OPTARG ;;
     J) write_input_json=$OPTARG ;;
+    z) compress_fold_input=$OPTARG ;;
+    f) compress_full_confidence=$OPTARG ;;
     r) model_seeds=$OPTARG ;;
     n) diffusion_samples=$OPTARG ;;
     c) recycling_steps=$OPTARG ;;
@@ -83,6 +87,9 @@ fi
 if [[ "$gpu_device" == "" ]]; then gpu_device="0"; fi
 if [[ "$run_data_pipeline" == "" ]]; then run_data_pipeline="true"; fi
 if [[ "$run_inference" == "" ]]; then run_inference="true"; fi
+if [[ "$write_input_json" == "" ]]; then write_input_json="true"; fi
+if [[ "$compress_fold_input" == "" ]]; then compress_fold_input="false"; fi
+if [[ "$compress_full_confidence" == "" ]]; then compress_full_confidence="false"; fi
 if [[ "$diffusion_samples" == "" ]]; then diffusion_samples="5"; fi
 if [[ "$recycling_steps" == "" ]]; then recycling_steps="3"; fi
 if [[ "$sampling_steps" == "" ]]; then sampling_steps="200"; fi
@@ -122,6 +129,8 @@ command_args=(
     fold "$input_path" "$output_dir"
     --run-data-pipeline "$run_data_pipeline"
     --run-inference "$run_inference"
+    --compress-fold-input "$compress_fold_input"
+    --compress-full-confidence "$compress_full_confidence"
     --diffusion-samples "$diffusion_samples"
     --recycling-steps "$recycling_steps"
     --sampling-steps "$sampling_steps"

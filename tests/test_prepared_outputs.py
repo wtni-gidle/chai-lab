@@ -52,7 +52,7 @@ def _publish_seed_in_process(root_text: str, seed: int) -> None:
         candidates,
         predictions_dir=root,
         seed=seed,
-    )
+    compress_full_confidence=True)
 
 
 class PreparedOutputTest(unittest.TestCase):
@@ -72,15 +72,15 @@ class PreparedOutputTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"not a valid CIF, JSON or NPZ")
             with patch.object(Path, "open", side_effect=AssertionError("no content reads")):
-                self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=2))
+                self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=2, compress_full_confidence=True))
             for path in paths:
                 with self.subTest(path=path.name):
                     path.write_bytes(b"")
-                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2, compress_full_confidence=True))
                     path.unlink()
-                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2, compress_full_confidence=True))
                     path.mkdir()
-                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2))
+                    self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=2, compress_full_confidence=True))
                     path.rmdir()
                     path.write_bytes(b"nonempty")
 
@@ -141,7 +141,7 @@ class PreparedOutputTest(unittest.TestCase):
             ):
                 published = publish_structure_candidates(
                     candidates, predictions_dir=root / "predictions", seed=42
-                )
+                , compress_full_confidence=True)
 
             self.assertEqual(len(published), 2)
             self.assertEqual(published[1].model_path.name, "seed-42_sample-1_model.cif")
@@ -164,26 +164,26 @@ class PreparedOutputTest(unittest.TestCase):
             self.assertFalse((root / "predictions" / "msa_depth.pdf").exists())
             self.assertEqual(list((root / "predictions").rglob("*.tmp")), [])
             self.assertTrue(
-                seed_outputs_complete(root / "predictions", seed=42, sample_count=2)
+                seed_outputs_complete(root / "predictions", seed=42, sample_count=2, compress_full_confidence=True)
             )
             published[1].pde_path.write_bytes(b"")
             self.assertFalse(
-                seed_outputs_complete(root / "predictions", seed=42, sample_count=2)
+                seed_outputs_complete(root / "predictions", seed=42, sample_count=2, compress_full_confidence=True)
             )
 
     def test_expected_paths_require_the_exact_sample_set(self):
-        paths = expected_seed_samples("predictions", seed=9, sample_count=2)
+        paths = expected_seed_samples("predictions", seed=9, sample_count=2, compress_full_confidence=True)
         self.assertEqual(paths[0].model_path.name, "seed-9_sample-0_model.cif")
         self.assertEqual(paths[1].pae_path.name, "pae_seed-9_sample-1.npz")
         with self.assertRaisesRegex(PreparedOutputError, "positive"):
-            expected_seed_samples("predictions", seed=9, sample_count=0)
+            expected_seed_samples("predictions", seed=9, sample_count=0, compress_full_confidence=True)
 
     def test_legacy_paths_do_not_complete_new_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             job = Path(temporary) / "job"
             old = expected_seed_samples(
                 job / "predictions", seed=7, sample_count=1
-            )[0]
+            , compress_full_confidence=True)[0]
             paths = (
                 old.model_path,
                 old.summary_path,
@@ -195,7 +195,7 @@ class PreparedOutputTest(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"legacy")
 
-            self.assertFalse(seed_outputs_complete(job, seed=7, sample_count=1))
+            self.assertFalse(seed_outputs_complete(job, seed=7, sample_count=1, compress_full_confidence=True))
             self.assertTrue(all(path.read_bytes() == b"legacy" for path in paths))
 
     def test_inconsistent_native_candidates_are_rejected(self):
@@ -207,7 +207,7 @@ class PreparedOutputTest(unittest.TestCase):
             plddt=torch.empty((0, 0)),
         )
         with self.assertRaisesRegex(PreparedOutputError, "inconsistent"):
-            publish_structure_candidates(candidates, predictions_dir="unused", seed=1)
+            publish_structure_candidates(candidates, predictions_dir="unused", seed=1, compress_full_confidence=True)
 
     def test_independent_processes_publish_different_seeds_to_one_target(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -230,7 +230,7 @@ class PreparedOutputTest(unittest.TestCase):
                 self.assertTrue(
                     seed_outputs_complete(
                         root, seed=seed, sample_count=1
-                    )
+                    , compress_full_confidence=True)
                 )
             self.assertEqual(list(root.rglob("*.tmp")), [])
             self.assertFalse((root / "msa_depth.pdf").exists())

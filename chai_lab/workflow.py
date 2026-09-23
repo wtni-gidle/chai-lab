@@ -67,7 +67,7 @@ def build_workflow_plan(
     """
     if write_input_json is not None and type(write_input_json) is not bool:
         raise ValueError("write_input_json must be a boolean or None")
-    publish = run_data_pipeline if write_input_json is None else write_input_json
+    publish = True if write_input_json is None else write_input_json
     if not run_data_pipeline and not run_inference:
         raise ValueError(
             "At least one of run_data_pipeline or run_inference must be true."
@@ -279,6 +279,8 @@ def run_prepared_workflow(
     run_data_pipeline: bool = True,
     run_inference: bool = True,
     write_input_json: bool | None = None,
+    compress_fold_input: bool = False,
+    compress_full_confidence: bool = False,
     use_msa_server: bool = False,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
@@ -332,6 +334,7 @@ def run_prepared_workflow(
                 use_msa_server=plan.run_data_pipeline and use_msa_server,
                 use_templates_server=plan.run_data_pipeline and use_templates_server,
                 msa_server_url=msa_server_url,
+                compress_fold_input=compress_fold_input,
                 max_template_date=max_template_date if plan.run_data_pipeline else None,
             )
 
@@ -358,6 +361,7 @@ def run_prepared_workflow(
                 plan.predictions_dir,
                 seed=seed,
                 sample_count=num_diffn_samples,
+                compress_full_confidence=compress_full_confidence,
             )
         )
         skipped_seeds = tuple(
@@ -372,6 +376,7 @@ def run_prepared_workflow(
                 plan.predictions_dir,
                 seed=seed,
                 sample_count=num_diffn_samples,
+                compress_full_confidence=compress_full_confidence,
             )
         )
         if not pending_seeds:
@@ -427,6 +432,7 @@ def run_prepared_workflow(
                     candidates,
                     predictions_dir=plan.predictions_dir,
                     seed=seed,
+                    compress_full_confidence=compress_full_confidence,
                 )
                 if len(published) != num_diffn_samples:
                     raise ValueError(

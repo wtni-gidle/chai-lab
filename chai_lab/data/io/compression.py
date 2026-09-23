@@ -62,13 +62,14 @@ def read_text_auto(path: str | Path) -> str:
         raise ValueError(f"Cannot decode text artifact {path}: {error}") from error
 
 
-def write_zstd_text(path: str | Path, text: str) -> Path:
-    """Atomically write UTF-8 text as zstd and return the absolute path."""
+def write_zstd_text(path: str | Path, text: str, *, compress: bool = True) -> Path:
+    """Atomically write UTF-8 text, optionally as zstd, and return its path."""
     path = Path(path).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary_path.write_bytes(_zstd_compress(text.encode("utf-8")))
+        data = text.encode("utf-8")
+        temporary_path.write_bytes(_zstd_compress(data) if compress else data)
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)

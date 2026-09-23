@@ -284,7 +284,7 @@ class WorkflowPlanTest(unittest.TestCase):
                 run_inference=True,
             )
             self.assertEqual(plan.name, "seq")
-            self.assertEqual(plan.prepared_path, manifest_path.resolve())
+            self.assertEqual(plan.prepared_path, (root / "result/seq/seq_data.json").resolve())
             self.assertEqual(plan.job_dir, (root / "result" / "seq").resolve())
             self.assertEqual(plan.prepared_input.sequences[0].ids, ("A", "B"))
 

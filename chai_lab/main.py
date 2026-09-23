@@ -59,7 +59,15 @@ def fold(
         "-J",
         "--write-input-json",
         "--write_input_json",
-        help="Write/update the public prepared bundle; omitted: same as -D.",
+        help="Write/update the public prepared bundle (default: true).",
+    ),
+    compress_fold_input: str = typer.Option(
+        "false", "-z", "--compress-fold-input", "--compress_fold_input",
+        help="Write prepared resources as zstd (default: false).",
+    ),
+    compress_full_confidence: str = typer.Option(
+        "false", "-f", "--compress-full-confidence", "--compress_full_confidence",
+        help="Write detailed confidence as compressed NPZ (default: false).",
     ),
     seeds: str | None = typer.Option(
         None, "-r", "--seeds", help="One seed or comma-separated seeds."
@@ -116,6 +124,8 @@ def fold(
             output_dir,
             run_data_pipeline=_boolean_option(run_data_pipeline, "--run-data-pipeline"),
             run_inference=_boolean_option(run_model_inference, "--run-inference"),
+            compress_fold_input=_boolean_option(compress_fold_input, "--compress-fold-input"),
+            compress_full_confidence=_boolean_option(compress_full_confidence, "--compress-full-confidence"),
             write_input_json=(
                 None if write_input_json is None
                 else _boolean_option(write_input_json, "--write-input-json")

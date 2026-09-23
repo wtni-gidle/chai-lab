@@ -44,11 +44,13 @@ def expected_seed_samples(
     *,
     seed: int,
     sample_count: int,
+    compress_full_confidence: bool = False,
 ) -> tuple[PublishedSample, ...]:
     """Return the exact wrapper paths expected for one seed."""
     if sample_count <= 0:
         raise PreparedOutputError("sample_count must be positive")
     predictions_dir = Path(predictions_dir).expanduser().resolve()
+    extension = "npz" if compress_full_confidence else "json"
     return tuple(
         PublishedSample(
             seed=seed,
@@ -62,13 +64,13 @@ def expected_seed_samples(
                 / f"seed-{seed}_sample-{sample}_summary_confidences.json"
             ),
             pae_path=(
-                predictions_dir / "full_data" / f"pae_seed-{seed}_sample-{sample}.npz"
+                predictions_dir / "full_data" / f"pae_seed-{seed}_sample-{sample}.{extension}"
             ),
             pde_path=(
-                predictions_dir / "full_data" / f"pde_seed-{seed}_sample-{sample}.npz"
+                predictions_dir / "full_data" / f"pde_seed-{seed}_sample-{sample}.{extension}"
             ),
             plddt_path=(
-                predictions_dir / "full_data" / f"plddt_seed-{seed}_sample-{sample}.npz"
+                predictions_dir / "full_data" / f"plddt_seed-{seed}_sample-{sample}.{extension}"
             ),
         )
         for sample in range(sample_count)
@@ -80,12 +82,14 @@ def seed_outputs_complete(
     *,
     seed: int,
     sample_count: int,
+    compress_full_confidence: bool = False,
 ) -> bool:
     """Lightly check that every expected file for a seed exists and is non-empty."""
     return all(
         path.is_file() and path.stat().st_size > 0
         for sample in expected_seed_samples(
-            predictions_dir, seed=seed, sample_count=sample_count
+            predictions_dir, seed=seed, sample_count=sample_count,
+            compress_full_confidence=compress_full_confidence
         )
         for path in (
             sample.model_path,
@@ -126,6 +130,8 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> Path:
 
 
 def _atomic_npz(path: Path, key: str, value: Any) -> Path:
+    if path.suffix == ".json":
+        return _atomic_json(path, {key: np.asarray(value).tolist()})
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _temporary_sibling(path)
     try:
@@ -151,6 +157,7 @@ def publish_structure_candidates(
     *,
     predictions_dir: str | Path,
     seed: int,
+    compress_full_confidence: bool = False,
 ) -> tuple[PublishedSample, ...]:
     """Atomically publish one seed's native candidates without ranking/reordering."""
     predictions_dir = Path(predictions_dir).expanduser().resolve()
@@ -165,7 +172,8 @@ def publish_structure_candidates(
         raise PreparedOutputError("Native candidate arrays have inconsistent sizes")
 
     expected = expected_seed_samples(
-        predictions_dir, seed=seed, sample_count=sample_count
+        predictions_dir, seed=seed, sample_count=sample_count,
+            compress_full_confidence=compress_full_confidence
     )
     published: list[PublishedSample] = []
     for sample, paths in enumerate(expected):
@@ -181,6 +189,8 @@ def publish_structure_candidates(
         pae_path = _atomic_npz(paths.pae_path, "pae", candidates.pae[sample])
         pde_path = _atomic_npz(paths.pde_path, "pde", candidates.pde[sample])
         plddt_path = _atomic_npz(paths.plddt_path, "plddt", candidates.plddt[sample])
+        for path in (pae_path, pde_path, plddt_path):
+            path.with_suffix(".json" if compress_full_confidence else ".npz").unlink(missing_ok=True)
         published.append(
             PublishedSample(
                 seed=seed,

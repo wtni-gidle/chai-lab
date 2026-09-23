@@ -62,6 +62,42 @@ def _write_request(root: Path, manifest: dict) -> Path:
 
 
 class PreparedTemplateWorkflowTest(unittest.TestCase):
+    def test_cross_entity_template_swap_survives_in_place_republication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = {"version": 1, "name": "seq", "sequences": [
+                {"protein": {"id": [chain], "sequence": sequence, "pairedMsa": "",
+                             "unpairedMsa": "", "templates": [{
+                                 "mmcif": text, "queryIndices": [0, 2],
+                                 "templateIndices": indices,
+                             }]}}
+                for chain, sequence, text, indices in (("A", "AAAA", MMCIF_A, [1, 3]),
+                                                        ("B", "CCCC", MMCIF_B, [2, 4]))
+            ]}
+            source = _write_request(root, manifest)
+            output = root / "seq/seq_data.json"
+            prepare_data_bundle(source, output, use_msa_server=False, compress_fold_input=True)
+            payload = json.loads(output.read_text())
+            templates = [entry["protein"]["templates"][0] for entry in payload["sequences"]]
+            templates[0]["mmcifPath"], templates[1]["mmcifPath"] = (
+                templates[1]["mmcifPath"], templates[0]["mmcifPath"]
+            )
+            output.write_text(json.dumps(payload))
+            for _ in range(2):
+                prepare_data_bundle(output, output, use_msa_server=False, compress_fold_input=True)
+                payload = json.loads(output.read_text())
+                for entry, chain, expected, indices in zip(
+                    payload["sequences"], ("A", "B"), (MMCIF_B, MMCIF_A),
+                    ([1, 3], [2, 4]), strict=True,
+                ):
+                    template = entry["protein"]["templates"][0]
+                    self.assertEqual(template["mmcifPath"], f"msas/seq__{chain}_template_0.cif.zst")
+                    path = output.parent / template["mmcifPath"]
+                    self.assertEqual(path.read_bytes()[:4], b"\x28\xb5\x2f\xfd")
+                    self.assertEqual(read_text_auto(path), expected)
+                    self.assertEqual(template["queryIndices"], [0, 2])
+                    self.assertEqual(template["templateIndices"], indices)
+
     def test_data_default_leaves_template_cutoff_unset(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -82,7 +118,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             prepare_data_bundle(
                 request, output, use_msa_server=False, use_templates_server=True,
                 searcher=searcher, template_parser=parser,
-            )
+            compress_fold_input=True)
             protein = json.loads(output.read_text())["sequences"][0]["protein"]
             self.assertEqual(protein["templates"], [])
 
@@ -128,7 +164,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                 max_template_date="2021-09-30",
                 searcher=fake_searcher,
                 template_parser=fake_template_parser,
-            )
+            compress_fold_input=True)
 
             self.assertEqual(observed["queries"], ["AAAA", "AAAA"])
             self.assertTrue(observed["search_templates"])
@@ -190,7 +226,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                 use_msa_server=False,
                 use_templates_server=True,
                 searcher=unexpected_search,
-            )
+            compress_fold_input=True)
 
             templates = json.loads(output.read_text())["sequences"][0]["protein"][
                 "templates"
@@ -211,7 +247,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             root = Path(temporary)
             request = _write_request(root, _manifest())
             output = root / "result/seq/seq_data.json"
-            prepare_data_bundle(request, output, use_msa_server=False)
+            prepare_data_bundle(request, output, use_msa_server=False, compress_fold_input=True)
             protein = json.loads(output.read_text())["sequences"][0]["protein"]
             self.assertEqual(protein["templates"], [])
 
@@ -249,7 +285,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
             output = root / "result/seq/seq_data.json"
 
             with self.assertRaisesRegex(ValueError, "case-insensitive"):
-                prepare_data_bundle(request, output, use_msa_server=False)
+                prepare_data_bundle(request, output, use_msa_server=False, compress_fold_input=True)
 
             self.assertFalse(output.parent.exists())
 
@@ -270,7 +306,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                 templates=(template,),
                 target_name="seq",
                 output_manifest=output,
-            )
+            compress_fold_input=True)
 
             with self.assertRaisesRegex(ValueError, "case-insensitive"):
                 materialize_template_structures(
@@ -278,7 +314,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                     templates=(template,),
                     target_name="seq",
                     output_manifest=output,
-                )
+                compress_fold_input=True)
 
             self.assertEqual(
                 sorted(path.name for path in (root / "msas").iterdir()),
@@ -326,7 +362,7 @@ class PreparedTemplateWorkflowTest(unittest.TestCase):
                 use_templates_server=True,
                 searcher=fake_searcher,
                 template_parser=fake_template_parser,
-            )
+            compress_fold_input=True)
 
             self.assertEqual(observed_query_ids, ["101", "102"])
 

@@ -73,6 +73,7 @@ def prepare_data_bundle(
     output_manifest_path: str | Path,
     *,
     use_msa_server: bool,
+    compress_fold_input: bool = False,
     use_templates_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     max_template_date: str | date | None = DEFAULT_MAX_TEMPLATE_DATE,
@@ -165,6 +166,7 @@ def prepare_data_bundle(
                     )
                 cursor += len(entity.ids)
 
+    suffix = ".zst" if compress_fold_input else ""
     staged_proteins: list[
         tuple[PreparedEntity, str | None, str | None, tuple[PreparedTemplate, ...]]
     ] = []
@@ -199,22 +201,29 @@ def prepare_data_bundle(
 
         if paired_text:
             resource_names.append(
-                f"{prepared.name}__{entity.ids[0]}_pairedmsa.a3m.zst"
+                f"{prepared.name}__{entity.ids[0]}_pairedmsa.a3m{suffix}"
             )
         if unpaired_text:
             resource_names.append(
-                f"{prepared.name}__{entity.ids[0]}_unpairedmsa.a3m.zst"
+                f"{prepared.name}__{entity.ids[0]}_unpairedmsa.a3m{suffix}"
             )
 
         templates = entity.templates
         if templates is None:
             templates = searched_templates_by_entity[index] or ()
-        templates = tuple(templates)
+        # Snapshot every entity before any destination can overwrite another
+        # entity's source during in-place republication.
+        templates = tuple(
+            replace(template, mmcif=read_text_auto(template.mmcif_path), mmcif_path=None)
+            if template.mmcif_path is not None else template
+            for template in templates
+        )
         resource_names.extend(
             _template_resource_names(
                 entity=entity,
                 templates=templates,
                 target_name=prepared.name,
+                compress_fold_input=compress_fold_input,
             )
         )
         staged_proteins.append((entity, paired_text, unpaired_text, templates))
@@ -232,8 +241,9 @@ def prepare_data_bundle(
         paired_path = None
         if paired_text:
             paired_absolute = write_zstd_text(
-                msa_dir / f"{prepared.name}__{first_id}_pairedmsa.a3m.zst",
+                msa_dir / f"{prepared.name}__{first_id}_pairedmsa.a3m{suffix}",
                 _canonical_text(paired_text),
+                compress=compress_fold_input,
             )
             paired_path = _relative_path(paired_absolute, output_manifest)
             paired_content = None
@@ -242,8 +252,9 @@ def prepare_data_bundle(
         unpaired_path = None
         if unpaired_text:
             unpaired_absolute = write_zstd_text(
-                msa_dir / f"{prepared.name}__{first_id}_unpairedmsa.a3m.zst",
+                msa_dir / f"{prepared.name}__{first_id}_unpairedmsa.a3m{suffix}",
                 _canonical_text(unpaired_text),
+                compress=compress_fold_input,
             )
             unpaired_path = _relative_path(unpaired_absolute, output_manifest)
             unpaired_content = None
@@ -253,6 +264,7 @@ def prepare_data_bundle(
             templates=templates,
             target_name=prepared.name,
             output_manifest=output_manifest,
+            compress_fold_input=compress_fold_input,
         )
 
         rewritten_proteins[index] = replace(
@@ -286,6 +298,7 @@ def prepare_msa_bundle(
     output_manifest_path: str | Path,
     *,
     use_msa_server: bool,
+    compress_fold_input: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     searcher: MSASearcher | None = None,
 ) -> PreparedInput:
@@ -296,6 +309,7 @@ def prepare_msa_bundle(
         use_msa_server=use_msa_server,
         msa_server_url=msa_server_url,
         searcher=searcher,
+        compress_fold_input=compress_fold_input,
     )
 
 

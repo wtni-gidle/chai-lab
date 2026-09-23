@@ -133,7 +133,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             self.assertTrue((inline_private / expected_basename("AAAA")).is_file())
 
             output_manifest = root / "result" / "seq" / "seq_data.json"
-            prepare_msa_bundle(input_path, output_manifest, use_msa_server=False)
+            prepare_msa_bundle(input_path, output_manifest, use_msa_server=False, compress_fold_input=True)
             protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
             self.assertEqual(protein["pairedMsaPath"], "msas/seq__A_pairedmsa.a3m.zst")
             self.assertEqual(
@@ -169,7 +169,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             prepare_msa_bundle(
                 input_path,
                 output_manifest,
-                use_msa_server=True,
+                use_msa_server=True, compress_fold_input=True,
                 searcher=unexpected_search,
             )
             protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
@@ -233,7 +233,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                 encoding="utf-8",
             )
             output_manifest = root / "result" / "seq" / "seq_data.json"
-            prepare_msa_bundle(input_path, output_manifest, use_msa_server=False)
+            prepare_msa_bundle(input_path, output_manifest, use_msa_server=False, compress_fold_input=True)
             resolved = load_prepared_input(output_manifest).validate_resources(
                 output_manifest
             )
@@ -276,7 +276,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             prepare_msa_bundle(
                 input_path,
                 output_manifest,
-                use_msa_server=False,
+                use_msa_server=False, compress_fold_input=True,
             )
             bundled_json = json.loads(output_manifest.read_text(encoding="utf-8"))
             protein = bundled_json["sequences"][0]["protein"]
@@ -351,7 +351,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             prepare_msa_bundle(
                 input_path,
                 output_manifest,
-                use_msa_server=True,
+                use_msa_server=True, compress_fold_input=True,
                 searcher=fake_searcher,
             )
             self.assertEqual(observed_queries, ["AAAA", "AAAA", "CCCC"])
@@ -395,7 +395,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
             prepare_msa_bundle(
                 input_path,
                 output_manifest,
-                use_msa_server=True,
+                use_msa_server=True, compress_fold_input=True,
                 searcher=fake_searcher,
             )
             protein = json.loads(output_manifest.read_text())["sequences"][0]["protein"]
@@ -435,7 +435,7 @@ class PreparedMSAWorkflowTest(unittest.TestCase):
                 prepare_msa_bundle(
                     input_path,
                     output_manifest,
-                    use_msa_server=False,
+                    use_msa_server=False, compress_fold_input=True,
                 )
 
             self.assertFalse(output_manifest.parent.exists())

@@ -14,7 +14,7 @@ The detailed Chinese design and operating notes are maintained in
 ### 2026-09-21: independent prepared-bundle publication
 
 `write_input_json: bool | None` is independent of data/inference execution. Omitted
-means the same as `run_data_pipeline`, preserving existing defaults. The CLI accepts
+means true, including inference-only runs. The CLI accepts
 `-J`, `--write-input-json`, and `--write_input_json`; the shell wrapper accepts `-J`.
 When true, JSON and relative `msas/...` resources are updated even if already present
 or all seeds skip. With data disabled this serializes existing conditions only and
@@ -45,10 +45,18 @@ self-contained JSON
 
 Compared with upstream Chai-1, this branch replaces the FASTA-oriented `fold` CLI
 with a prepared-JSON workflow, adds a durable data/inference boundary, persists
-paired and unpaired MSA as `.a3m.zst`, and persists templates only after Chai's
+paired and unpaired MSA as external `.a3m` text by default, and persists templates only after Chai's
 native M8/RCSB/Kalign parsing as mmCIF plus residue mappings. Inference reconstructs
 hash-named `.aligned.pqt` files in a private temporary directory and still uses the
 native MSA, template, ESM, restraint, feature, trunk, diffusion, and confidence code.
+
+`--compress-fold-input` / `--compress_fold_input` (shell `-z`) defaults to false.
+True writes external A3M/mmCIF resources as zstd; readers accept plain and compressed
+resources independently. `--compress-full-confidence` / `--compress_full_confidence`
+(shell `-f`) defaults to false: separate pLDDT, PAE and PDE files use JSON. True uses
+compressed NPZ with the same stems, keys, values and array dimensions. Switching
+format replaces the corresponding old confidence files; summaries and native
+intermediates are unchanged. Skip checks require the selected format.
 
 Template-server preparation accepts optional `--max-template-date YYYY-MM-DD`.
 When omitted, no date filter runs, including for hits with unknown release dates.

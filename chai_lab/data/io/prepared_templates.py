@@ -66,10 +66,12 @@ def _template_resource_names(
     entity: PreparedEntity,
     templates: Sequence[PreparedTemplate],
     target_name: str,
+    compress_fold_input: bool = False,
 ) -> tuple[str, ...]:
     first_id = entity.ids[0]
+    suffix = ".zst" if compress_fold_input else ""
     return tuple(
-        f"{target_name}__{first_id}_template_{index}.cif.zst"
+        f"{target_name}__{first_id}_template_{index}.cif{suffix}"
         for index in range(len(templates))
     )
 
@@ -301,6 +303,7 @@ def materialize_template_structures(
     templates: Sequence[PreparedTemplate],
     target_name: str,
     output_manifest: Path,
+    compress_fold_input: bool = False,
 ) -> tuple[PreparedTemplate, ...]:
     """Externalize template mmCIFs beside MSAs and return manifest-relative paths."""
     msa_directory = output_manifest.parent / "msas"
@@ -308,6 +311,7 @@ def materialize_template_structures(
         entity=entity,
         templates=templates,
         target_name=target_name,
+        compress_fold_input=compress_fold_input,
     )
     _validate_resource_names(resource_names)
     _validate_resource_names_against_directory(resource_names, msa_directory)
@@ -332,6 +336,7 @@ def materialize_template_structures(
         output_path = write_zstd_text(
             msa_directory / resource_name,
             mmcif,
+            compress=compress_fold_input,
         )
         materialized.append(
             replace(

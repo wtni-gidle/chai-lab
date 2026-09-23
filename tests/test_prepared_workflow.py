@@ -142,7 +142,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                 path.mkdir()
                 return path
 
-            def fake_publish(candidates, predictions_dir, seed):
+            def fake_publish(candidates, predictions_dir, seed, **kwargs):
                 return (
                     SimpleNamespace(
                         model_path=Path(predictions_dir)
@@ -203,11 +203,13 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                         native_candidates,
                         predictions_dir=(root / "result/seq").resolve(),
                         seed=4,
+                        compress_full_confidence=False,
                     ),
                     call(
                         native_candidates,
                         predictions_dir=(root / "result/seq").resolve(),
                         seed=5,
+                        compress_full_confidence=False,
                     ),
                 ],
             )
@@ -241,7 +243,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
             other_cwd = root / "elsewhere"
             other_cwd.mkdir()
 
-            def fake_publish(candidates, predictions_dir, seed):
+            def fake_publish(candidates, predictions_dir, seed, **kwargs):
                 return (
                     SimpleNamespace(
                         model_path=Path(predictions_dir)
@@ -268,6 +270,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                         renamed,
                         root / "predictions",
                         run_data_pipeline=False,
+                        write_input_json=False,
                         run_inference=True,
                         seeds=7,
                         num_diffn_samples=1,
@@ -338,7 +341,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                     paths = [
                         predictions / "models" / f"{prefix}_model.cif",
                         predictions / "summary_confidences" / f"{prefix}_summary_confidences.json",
-                        *(predictions / "full_data" / f"{kind}_{prefix}.npz"
+                        *(predictions / "full_data" / f"{kind}_{prefix}.json"
                           for kind in ("pae", "pde", "plddt")),
                     ]
                     for path in paths:
@@ -346,7 +349,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                         path.write_bytes(b"old condition result")
                     if seed == 4:
                         complete_paths.extend(paths)
-            (predictions / "full_data/pde_seed-5_sample-1.npz").write_bytes(b"")
+            (predictions / "full_data/pde_seed-5_sample-1.json").write_bytes(b"")
             changed = _minimal_manifest()
             changed["sequences"][0]["protein"]["sequence"] = "AAAA"
             request.write_text(json.dumps(changed), encoding="utf-8")
@@ -355,7 +358,7 @@ class PreparedWorkflowExecutionTest(unittest.TestCase):
                 path.mkdir()
                 return path
 
-            def fake_publish(candidates, predictions_dir, seed):
+            def fake_publish(candidates, predictions_dir, seed, **kwargs):
                 return tuple(
                     SimpleNamespace(
                         model_path=Path(predictions_dir)
