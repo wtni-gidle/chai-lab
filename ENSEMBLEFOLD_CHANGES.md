@@ -7,7 +7,9 @@ checkpoints, feature definitions, and sampling mathematics are outside the scope
 the wrapper.
 
 The detailed Chinese design and operating notes are maintained in
-`/Users/wtni/Projects/EnsembleFold/CHAI1_WRAPPER_NOTES.md`.
+`/Users/wtni/Projects/EnsembleFold/docs/project/CHAI1_WRAPPER_NOTES.md`.
+Current user instructions are in
+`/Users/wtni/Projects/EnsembleFold/docs/usage/chai-1.md`.
 
 ## Current wrapper contract at a glance
 
