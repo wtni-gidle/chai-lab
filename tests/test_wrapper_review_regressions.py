@@ -100,7 +100,7 @@ class TemplateStageRegressionTest(unittest.TestCase):
 
 
 class PublicationRegressionTest(unittest.TestCase):
-    def test_interrupted_overwrite_is_not_complete_and_successful_retry_recovers(self):
+    def test_publication_failure_propagates_without_changing_file_only_completion(self):
         for compressed in (False, True):
             with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -118,15 +118,36 @@ class PublicationRegressionTest(unittest.TestCase):
                         publish_structure_candidates(candidates, predictions_dir=root,
                             seed=7, compress_full_confidence=compressed)
                 self.assertEqual((root / "models/seed-7_sample-0_model.cif").read_text(), "NEW MODEL")
-                self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=1,
+                self.assertEqual(list(root.glob(".seed-*.publishing")), [])
+                self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=1,
                     compress_full_confidence=compressed))
                 with patch("chai_lab.data.io.prepared_outputs.get_scores", return_value={}):
                     publish_structure_candidates(candidates, predictions_dir=root,
                         seed=7, compress_full_confidence=compressed)
                 self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=1,
                     compress_full_confidence=compressed))
+                self.assertEqual(list(root.glob(".seed-*.publishing")), [])
                 summary = json.loads((root / "summary_confidences/seed-7_sample-0_summary_confidences.json").read_text())
                 self.assertEqual(summary, {"seed": 7, "sample": 0})
+
+    def test_legacy_publication_marker_does_not_affect_file_completeness(self):
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                old_results(root, compressed=compressed)
+                marker = root / ".seed-7.publishing"
+                marker.touch()
+                self.assertTrue(seed_outputs_complete(root, seed=7, sample_count=1,
+                    compress_full_confidence=compressed))
+                suffix = "npz" if compressed else "json"
+                path = root / "full_data" / f"plddt_seed-7_sample-0.{suffix}"
+                path.write_bytes(b"")
+                self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=1,
+                    compress_full_confidence=compressed))
+                path.unlink()
+                self.assertFalse(seed_outputs_complete(root, seed=7, sample_count=1,
+                    compress_full_confidence=compressed))
+                self.assertTrue(marker.exists())
 
 
 class ResourceValidationRegressionTest(unittest.TestCase):
