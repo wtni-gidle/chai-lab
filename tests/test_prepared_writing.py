@@ -191,7 +191,9 @@ def test_inference_only_publication_cannot_enable_search(tmp_path, monkeypatch):
 
     source = request(tmp_path)
     payload = json.loads(source.read_text())
-    payload["sequences"][0]["protein"] = {"id": ["A"], "sequence": "ACDE"}
+    payload["sequences"][0]["protein"] = {
+        "id": ["A"], "sequence": "ACDE", "templates": []
+    }
     source.write_text(json.dumps(payload))
     output = tmp_path / "out"
     completed_seed(output)
