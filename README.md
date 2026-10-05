@@ -1,3 +1,5 @@
+> EnsembleFold wrapper 的当前用法、输入输出及验证记录统一维护在[方法手册](../docs/usage/chai-1.md)和[共同说明](../docs/usage/README.md)。旧 wrapper 专页已合并归档；下文原生项目说明保留其自身适用范围。
+
 # Chai-1
 
 Chai-1 is a multi-modal foundation model for molecular structure prediction that performs at the state-of-the-art across a variety of benchmarks. Chai-1 enables unified prediction of proteins, small molecules, DNA, RNA, glycosylations, and more.

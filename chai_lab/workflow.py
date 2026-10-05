@@ -84,6 +84,14 @@ def build_workflow_plan(
         )
 
     prepared = load_prepared_input(source)
+    if not run_data_pipeline:
+        for entity in prepared.sequences:
+            if entity.kind == "protein" and entity.templates is None:
+                raise PreparedInputError(
+                    f"Protein {entity.ids[0]!r} has not completed template preparation; "
+                    "run the data pipeline first, or explicitly supply templates: [] "
+                    "to request no templates."
+                )
     if validate_resources:
         prepared = prepared.validate_resources(source)
     name = prepared.name

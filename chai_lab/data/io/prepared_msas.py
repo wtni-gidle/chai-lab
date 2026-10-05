@@ -28,7 +28,7 @@ from chai_lab.data.io.prepared_templates import (
     _template_resource_names,
     _validate_resource_names,
     _validate_resource_names_against_directory,
-    materialize_template_structures,
+    _write_template_structures,
     parse_max_template_date,
     parse_native_template_hits,
 )
@@ -259,9 +259,15 @@ def prepare_data_bundle(
             unpaired_path = _relative_path(unpaired_absolute, output_manifest)
             unpaired_content = None
 
-        templates = materialize_template_structures(
+        templates = _write_template_structures(
             entity=entity,
             templates=templates,
+            resource_names=_template_resource_names(
+                entity=entity,
+                templates=templates,
+                target_name=prepared.name,
+                compress_fold_input=compress_fold_input,
+            ),
             target_name=prepared.name,
             output_manifest=output_manifest,
             compress_fold_input=compress_fold_input,

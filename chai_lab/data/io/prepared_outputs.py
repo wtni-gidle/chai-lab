@@ -84,7 +84,9 @@ def seed_outputs_complete(
     sample_count: int,
     compress_full_confidence: bool = False,
 ) -> bool:
-    """Lightly check that every expected file for a seed exists and is non-empty."""
+    """Check non-empty artifacts, excluding an interrupted publication."""
+    if _seed_publication_marker(predictions_dir, seed).exists():
+        return False
     return all(
         path.is_file() and path.stat().st_size > 0
         for sample in expected_seed_samples(
@@ -99,6 +101,10 @@ def seed_outputs_complete(
             sample.plddt_path,
         )
     )
+
+
+def _seed_publication_marker(predictions_dir: str | Path, seed: int) -> Path:
+    return Path(predictions_dir).expanduser().resolve() / f".seed-{seed}.publishing"
 
 
 def _temporary_sibling(path: Path) -> Path:
@@ -159,7 +165,12 @@ def publish_structure_candidates(
     seed: int,
     compress_full_confidence: bool = False,
 ) -> tuple[PublishedSample, ...]:
-    """Atomically publish one seed's native candidates without ranking/reordering."""
+    """Publish native candidates, leaving a marker if any file update fails.
+
+    Files are replaced individually, not as a group. The marker makes a failed
+    overwrite ineligible for skip until a complete retry succeeds. This is not
+    a same-seed concurrency lock or an input/parameter fingerprint.
+    """
     predictions_dir = Path(predictions_dir).expanduser().resolve()
     sample_count = len(candidates.cif_paths)
     if not (
@@ -173,8 +184,11 @@ def publish_structure_candidates(
 
     expected = expected_seed_samples(
         predictions_dir, seed=seed, sample_count=sample_count,
-            compress_full_confidence=compress_full_confidence
+        compress_full_confidence=compress_full_confidence
     )
+    marker = _seed_publication_marker(predictions_dir, seed)
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+    marker.touch()
     published: list[PublishedSample] = []
     for sample, paths in enumerate(expected):
         model_path = _atomic_copy(candidates.cif_paths[sample], paths.model_path)
@@ -210,4 +224,5 @@ def publish_structure_candidates(
     #     _atomic_copy(
     #         candidates.msa_coverage_plot_path, predictions_dir / "msa_depth.pdf"
     #     )
+    marker.unlink()
     return tuple(published)

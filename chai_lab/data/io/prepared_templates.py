@@ -52,13 +52,16 @@ def _validate_resource_names_against_directory(
     """Reject case-only aliases of resources already present in a bundle."""
     if not directory.is_dir():
         return
+    existing_names: dict[str, set[str]] = {}
+    for path in directory.iterdir():
+        existing_names.setdefault(path.name.casefold(), set()).add(path.name)
     for name in resource_names:
-        for path in directory.iterdir():
-            if path.name.casefold() == name.casefold() and path.name != name:
-                raise ValueError(
-                    "Prepared resource names collide on a case-insensitive "
-                    f"filesystem: {path.name!r} and {name!r}"
-                )
+        aliases = existing_names.get(name.casefold(), set()) - {name}
+        if aliases:
+            raise ValueError(
+                "Prepared resource names collide on a case-insensitive "
+                f"filesystem: {sorted(aliases)[0]!r} and {name!r}"
+            )
 
 
 def _template_resource_names(
@@ -315,6 +318,27 @@ def materialize_template_structures(
     )
     _validate_resource_names(resource_names)
     _validate_resource_names_against_directory(resource_names, msa_directory)
+    return _write_template_structures(
+        entity=entity,
+        templates=templates,
+        resource_names=resource_names,
+        target_name=target_name,
+        output_manifest=output_manifest,
+        compress_fold_input=compress_fold_input,
+    )
+
+
+def _write_template_structures(
+    *,
+    entity: PreparedEntity,
+    templates: Sequence[PreparedTemplate],
+    resource_names: Sequence[str],
+    target_name: str,
+    output_manifest: Path,
+    compress_fold_input: bool = False,
+) -> tuple[PreparedTemplate, ...]:
+    """Write templates after the caller validates the full destination set."""
+    msa_directory = output_manifest.parent / "msas"
     template_contents: list[str] = []
     for template in templates:
         mmcif = (

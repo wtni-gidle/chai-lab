@@ -10,6 +10,56 @@ from pathlib import Path
 
 
 class RunChai1ScriptTest(unittest.TestCase):
+    def test_boolean_spellings_are_normalized_before_gpu_selection_and_forwarding(self):
+        repository = Path(__file__).resolve().parents[1]
+        options = {
+            "-D": "--run-data-pipeline", "-P": "--run-inference",
+            "-J": "--write-input-json", "-z": "--compress-fold-input",
+            "-f": "--compress-full-confidence", "-M": "--use-msa-server",
+            "-T": "--use-templates-server", "-E": "--use-esm-embeddings",
+            "-C": "--fasta-names-as-cif-chains", "-S": "--skip",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "chai-lab"
+            executable.write_text('#!/bin/bash\nprintf "GPU=%s\\n" "$CUDA_VISIBLE_DEVICES"\nprintf "ARG=%s\\n" "$@"\n')
+            executable.chmod(0o755)
+            source = root / "input.json"
+            source.write_text("{}")
+            environment = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
+                           "CUDA_VISIBLE_DEVICES": "9"}
+            command = ["bash", str(repository / "run_chai1.sh"), "-i", str(source),
+                       "-o", str(root / "out"), "-d", "7"]
+            for value, expected in [("True", "true"), ("YES", "true"), ("1", "true"),
+                                    (" On ", "true"), ("False", "false"), ("0", "false"),
+                                    ("NO", "false"), (" off ", "false")]:
+                with self.subTest(value=value):
+                    args = [item for flag in options for item in (flag, value)]
+                    # Keep data enabled when testing false inference and other flags.
+                    if expected == "false":
+                        args += ["-D", "true"]
+                    result = subprocess.run(command + args, env=environment,
+                        text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    lines = result.stdout.splitlines()
+                    self.assertIn("GPU=7" if expected == "true" else "GPU=9", lines)
+                    forwarded = [line[4:] for line in lines if line.startswith("ARG=")]
+                    for flag, long_option in options.items():
+                        want = "true" if flag == "-D" else expected
+                        self.assertEqual(forwarded[forwarded.index(long_option) + 1], want)
+            for flag in options:
+                for invalid in ("typo", "", " "):
+                    with self.subTest(flag=flag, invalid=invalid):
+                        result = subprocess.run(command + [flag, invalid], env=environment,
+                            text=True, capture_output=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(flag, result.stderr)
+                        self.assertNotIn("ARG=", result.stdout)
+            result = subprocess.run(command + ["-D", "FALSE", "-P", "OFF"],
+                env=environment, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("ARG=", result.stdout)
+
     def test_script_forwards_af3_style_options_and_gpu(self):
         repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
