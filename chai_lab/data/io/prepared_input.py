@@ -543,7 +543,14 @@ def write_prepared_input(prepared: PreparedInput, path: str | Path) -> Path:
     temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary_path.open("w", encoding="utf-8") as handle:
-            json.dump(prepared.to_dict(), handle, indent=2)
+            json_text = json.dumps(prepared.to_dict(), indent=2)
+            # Match AF3: keep template indices and model seeds on single lines.
+            json_text = re.sub(
+                r'("(?:queryIndices|templateIndices|modelSeeds)": \[)([\s\n\d,]+)(\],?)',
+                lambda match: match[1] + re.sub(r'\n\s+', ' ', match[2].strip()) + match[3],
+                json_text,
+            )
+            handle.write(json_text)
             handle.write("\n")
         os.replace(temporary_path, path)
     finally:
